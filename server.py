@@ -191,6 +191,7 @@ class App(BaseHTTPRequestHandler):
         path=urllib.parse.urlparse(self.path).path
         try:
             if path in ('/','/login'): return self.page_login()
+            if path=='/register': return self.page_register()
             if path=='/logout': return self.logout()
             if path=='/admin/users': return self.admin_users()
             if path=='/admin/export': return self.admin_export()
@@ -212,6 +213,7 @@ class App(BaseHTTPRequestHandler):
         path=urllib.parse.urlparse(self.path).path
         try:
             if path=='/setup': return self.setup_admin()
+            if path=='/register': return self.register_user()
             if path=='/login': return self.login()
             if path=='/admin/create-user': return self.create_user()
             if path=='/admin/toggle-user': return self.toggle_user()
@@ -227,8 +229,48 @@ class App(BaseHTTPRequestHandler):
         if not has_admin():
             content=f"""<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Créer l’administrateur unique</h1><div class='msg'>Le site accepte un seul compte administrateur. Aucun autre compte ne peut être créé sans autorisation de cet administrateur.</div><form method='post' action='/setup' class='grid'><label>Nom complet<input name='name' required></label><label>Email<input name='email' type='email' required></label><label>Mot de passe<input name='password' type='password' minlength='8' required></label><button class='btn'>Créer l’administrateur</button></form></div>"""
         else:
-            content="""<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Connexion sécurisée</h1><p class='small center'>Aucun identifiant n’est affiché publiquement.</p><form method='post' action='/login' class='grid'><label>Email<input name='email' type='email' autocomplete='username' required></label><label>Mot de passe<input name='password' type='password' autocomplete='current-password' required></label><button class='btn'>Connexion</button></form></div>"""
+            content="""<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Connexion sécurisée</h1><p class='small center'>Aucun identifiant n’est affiché publiquement.</p><form method='post' action='/login' class='grid'><label>Email<input name='email' type='email' autocomplete='username' required></label><label>Mot de passe<input name='password' type='password' autocomplete='current-password' required></label><button class='btn'>Connexion</button></form><p class='center'><a href='/register'>Créer une demande de compte</a></p></div>"""
         self.send_html(layout(None,'Connexion',content))
+    def page_register(self):
+        if not has_admin():
+            return self.redirect('/login')
+        content="""<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Créer une demande de compte</h1>
+        <div class='msg'>Votre compte sera créé en attente de validation. Vous ne pourrez pas naviguer dans l’application tant que l’administrateur unique ne l’aura pas autorisé.</div>
+        <form method='post' action='/register' class='grid'>
+        <label>Nom complet<input name='name' required></label>
+        <label>Email<input name='email' type='email' required></label>
+        <label>Mot de passe<input name='password' type='password' minlength='8' required></label>
+        <label>Rôle demandé<select name='role' required>
+            <option value='prescripteur'>Clinicien prescripteur</option>
+            <option value='laboratoire'>Technicien laboratoire</option>
+            <option value='chef_labo'>Chef service laboratoire</option>
+        </select></label>
+        <label>Service / unité<input name='service' required placeholder='Ex : Médecine, Urgences, Bactériologie'></label>
+        <button class='btn'>Envoyer la demande de compte</button>
+        </form><p class='center'><a href='/login'>Retour à la connexion</a></p></div>"""
+        self.send_html(layout(None,'Création de compte',content))
+
+    def register_user(self):
+        if not has_admin():
+            return self.redirect('/login')
+        p=self.read_post()
+        name=p.get('name','').strip()
+        email=p.get('email','').strip().lower()
+        password=p.get('password','')
+        role=p.get('role','')
+        service=p.get('service','').strip()
+        if role not in ('prescripteur','laboratoire','chef_labo') or not name or not email or len(password)<8 or not service:
+            return self.send_html(layout(None,'Erreur',"<div class='login card'><h1>Demande refusée</h1><p>Informations incomplètes. Le mot de passe doit contenir au moins 8 caractères.</p><a class='btn' href='/register'>Recommencer</a></div>"),400)
+        try:
+            with db_conn() as con:
+                con.execute("INSERT INTO users(name,email,password_hash,role,service,active,created_at) VALUES(?,?,?,?,?,?,?)",
+                    (name,email,hash_password(password),role,service,0,now()))
+                con.commit()
+        except sqlite3.IntegrityError:
+            return self.send_html(layout(None,'Erreur',"<div class='login card'><h1>Email déjà utilisé</h1><p>Un compte existe déjà avec cet email.</p><a class='btn' href='/login'>Retour</a></div>"),400)
+        audit(None,'Demande de création de compte : '+email)
+        self.send_html(layout(None,'Compte en attente',"<div class='login card'><h1>Demande envoyée</h1><div class='msg'>Votre compte a été créé, mais il est en attente de validation par l’administrateur. Vous pourrez vous connecter après autorisation.</div><a class='btn' href='/login'>Retour à la connexion</a></div>"))
+
     def setup_admin(self):
         if has_admin(): return self.redirect('/login')
         p=self.read_post();
@@ -239,9 +281,11 @@ class App(BaseHTTPRequestHandler):
     def login(self):
         p=self.read_post(); email=p.get('email','').strip().lower(); pwd=p.get('password','')
         with db_conn() as con:
-            u=con.execute("SELECT * FROM users WHERE email=? AND active=1",(email,)).fetchone()
+            u=con.execute("SELECT * FROM users WHERE email=?",(email,)).fetchone()
         if not u or not verify_password(u['password_hash'],pwd):
-            return self.send_html(layout(None,'Connexion',"<div class='login card'><h1>Accès refusé</h1><p>Email ou mot de passe incorrect, ou compte suspendu.</p><a class='btn' href='/login'>Réessayer</a></div>"),401)
+            return self.send_html(layout(None,'Connexion',"<div class='login card'><h1>Accès refusé</h1><p>Email ou mot de passe incorrect.</p><a class='btn' href='/login'>Réessayer</a></div>"),401)
+        if not u['active']:
+            return self.send_html(layout(None,'Compte en attente',"<div class='login card'><h1>Compte non autorisé</h1><p>Votre compte est créé, mais il n’a pas encore été validé par l’administrateur. Contactez l’administrateur du système.</p><a class='btn' href='/login'>Retour</a></div>"),403)
         self.send_response(303); self.send_header('Location','/admin/users' if u['role']=='admin' else ('/requests' if u['role']=='prescripteur' else ('/chief/pending' if u['role']=='chef_labo' else '/lab/inbox')))
         ck=cookies.SimpleCookie(); ck['session']=sign(str(u['id'])); ck['session']['path']='/'; ck['session']['httponly']=True; self.send_header('Set-Cookie', ck.output(header=''))
         self.end_headers(); audit(dict(u),'Connexion')
@@ -251,8 +295,15 @@ class App(BaseHTTPRequestHandler):
         u=self.require(['admin']);
         if not u: return
         with db_conn() as con: users=con.execute("SELECT * FROM users ORDER BY role,name").fetchall()
-        rows=''.join(f"<tr><td>{h(x['name'])}</td><td>{h(x['email'])}</td><td>{h(x['role'])}</td><td>{h(x['service'])}</td><td>{pill('Actif' if x['active'] else 'Suspendu')}</td><td>{'' if x['role']=='admin' else f'<form method=post action=/admin/toggle-user><input type=hidden name=id value={x['id']}><button class=\"btn sec\">Suspendre/Réactiver</button></form>'}</td></tr>" for x in users)
-        content=f"""<div class='card'><h2>Créer un compte autorisé</h2><div class='msg warn'>Un seul administrateur est accepté. L’administrateur gère les comptes, mais ne voit pas les données confidentielles des bilans.</div><form method='post' action='/admin/create-user' class='grid g4'><label>Nom<input name='name' required></label><label>Email<input name='email' type='email' required></label><label>Mot de passe temporaire<input name='password' type='password' minlength='8' required></label><label>Rôle<select name='role'><option value='prescripteur'>Clinicien prescripteur</option><option value='laboratoire'>Technicien laboratoire</option><option value='chef_labo'>Chef service laboratoire</option></select></label><label>Service<input name='service' required></label><div><br><button class='btn'>Créer le compte</button></div></form></div><div class='card'><h2>Comptes</h2><table class='table'><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Service</th><th>Statut</th><th>Action</th></tr>{rows}</table></div>"""
+        rows=''
+        for x in users:
+            status = 'Actif' if x['active'] else 'En attente / Suspendu'
+            action = ''
+            if x['role']!='admin':
+                action_label = 'Suspendre' if x['active'] else 'Valider / Réactiver'
+                action = f"<form method='post' action='/admin/toggle-user'><input type='hidden' name='id' value='{x['id']}'><button class='btn sec'>{action_label}</button></form>"
+            rows += f"<tr><td>{h(x['name'])}</td><td>{h(x['email'])}</td><td>{h(x['role'])}</td><td>{h(x['service'])}</td><td>{pill(status)}</td><td>{action}</td></tr>"
+        content=f"""<div class='card'><h2>Créer directement un compte autorisé</h2><div class='msg warn'>Un seul administrateur est accepté. Les utilisateurs peuvent demander eux-mêmes un compte, mais ils ne peuvent pas accéder à l’application tant que l’administrateur ne valide pas leur compte. L’administrateur gère les comptes, mais ne voit pas les données confidentielles des bilans.</div><form method='post' action='/admin/create-user' class='grid g4'><label>Nom<input name='name' required></label><label>Email<input name='email' type='email' required></label><label>Mot de passe temporaire<input name='password' type='password' minlength='8' required></label><label>Rôle<select name='role'><option value='prescripteur'>Clinicien prescripteur</option><option value='laboratoire'>Technicien laboratoire</option><option value='chef_labo'>Chef service laboratoire</option></select></label><label>Service<input name='service' required></label><div><br><button class='btn'>Créer le compte</button></div></form></div><div class='card'><h2>Comptes</h2><table class='table'><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Service</th><th>Statut</th><th>Action</th></tr>{rows}</table></div>"""
         self.send_html(layout(u,'Utilisateurs',content))
     def create_user(self):
         u=self.require(['admin']);
