@@ -1,1 +1,2 @@
-# Aucune dépendance externe obligatoire pour la version serveur autonome.
+Flask==3.0.3
+psycopg2-binary==2.9.9
