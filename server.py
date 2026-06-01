@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ECBU Liaison Pro - serveur cloud stable avec PostgreSQL/SQLite.
+"""ECBU Liaison Pro - serveur cloud stable avec PostgreSQL obligatoire.
 Démarrage Render: python server.py --host 0.0.0.0 --port $PORT
 """
 import os, json, csv, io, hmac, base64, secrets, hashlib, datetime as dt, argparse
 from functools import wraps
-from urllib.parse import urlparse
-
-from flask import Flask, request, redirect, session, Response, render_template_string, abort
+from flask import Flask, request, redirect, session, Response, abort
 
 APP_NAME = "ECBU Liaison Pro"
 ADMIN_EMAIL = "medesse@admin.lab"
@@ -19,12 +17,15 @@ app = Flask(__name__)
 app.secret_key = SECRET_KEY
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Lax', SESSION_COOKIE_SECURE=bool(DATABASE_URL))
 
-USE_PG = DATABASE_URL.startswith("postgres")
-if USE_PG:
-    import psycopg
-    from psycopg.rows import dict_row
-else:
-    import sqlite3
+# PostgreSQL est obligatoire sur Render pour éviter la perte des comptes et données.
+if not DATABASE_URL.startswith("postgres"):
+    raise RuntimeError(
+        "DATABASE_URL PostgreSQL manquant. Configurez DATABASE_URL dans Render > Environment, puis cliquez sur Save, rebuild, and deploy."
+    )
+
+USE_PG = True
+import psycopg
+from psycopg.rows import dict_row
 
 ANTIBIOTICS = [
     "Ampicilline (AMP10)", "Amoxicilline + acide clavulanique (AMC30)", "Pipéracilline/Tazobactam (TZP)",
@@ -55,12 +56,7 @@ def now():
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def db():
-    if USE_PG:
-        con = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-        return con
-    con = sqlite3.connect("ecbu_liaison.db")
-    con.row_factory = sqlite3.Row
-    return con
+    return psycopg.connect(DATABASE_URL, row_factory=dict_row)
 
 def q(sql):
     return sql.replace("?", "%s") if USE_PG else sql
@@ -102,61 +98,35 @@ def verify_password(stored, pwd):
         return False
 
 def init_db():
-    if USE_PG:
-        ddl = [
-            """CREATE TABLE IF NOT EXISTS users(
-                id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','prescripteur','laboratoire','chef_labo')),
-                service TEXT, active INTEGER DEFAULT 0, approved INTEGER DEFAULT 0, created_at TEXT NOT NULL, suspended_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS requests(
-                id SERIAL PRIMARY KEY, auto_number TEXT UNIQUE, sample_number TEXT, code_prelevement TEXT,
-                date_prelevement TEXT, heure_prelevement TEXT, service_prescripteur TEXT, patient_status TEXT,
-                age TEXT, age_unit TEXT, sex TEXT, patient_antibiotics TEXT, patient_probe TEXT, sample_type TEXT,
-                patient_informe_decl TEXT, technique_maitrisee_decl TEXT, toilette_decl TEXT, flacon_sterile_decl TEXT,
-                delai_miction_depot TEXT, temperature_conservation TEXT, prescriber_name TEXT, patient_name TEXT,
-                patient_firstname TEXT, patient_phone TEXT, clinical_context TEXT, exam_requested TEXT, urgent TEXT,
-                observations_prescripteur TEXT, created_by INTEGER NOT NULL, created_by_name TEXT, status TEXT NOT NULL,
-                conformity TEXT DEFAULT 'Non évalué', rejection_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            )""",
-            """CREATE TABLE IF NOT EXISTS lab_results(
-                request_id INTEGER PRIMARY KEY, reception_date TEXT, reception_time TEXT, aspect TEXT, leucocytes TEXT,
-                hematies TEXT, cellules_epitheliales TEXT, autres_micro TEXT, gram_result TEXT, culture_status TEXT,
-                culture_details TEXT, antibiogram_json TEXT, conclusion TEXT, validator_name TEXT, validator_title TEXT,
-                lab_operator_name TEXT, chief_validator_name TEXT, chief_validation_at TEXT, result_sent_at TEXT, quality_json TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS audit(id SERIAL PRIMARY KEY, user_id INTEGER, user_name TEXT, action TEXT, created_at TEXT NOT NULL)""",
-        ]
-    else:
-        ddl = [
-            """CREATE TABLE IF NOT EXISTS users(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','prescripteur','laboratoire','chef_labo')),
-                service TEXT, active INTEGER DEFAULT 0, approved INTEGER DEFAULT 0, created_at TEXT NOT NULL, suspended_at TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS requests(
-                id INTEGER PRIMARY KEY AUTOINCREMENT, auto_number TEXT UNIQUE, sample_number TEXT, code_prelevement TEXT,
-                date_prelevement TEXT, heure_prelevement TEXT, service_prescripteur TEXT, patient_status TEXT,
-                age TEXT, age_unit TEXT, sex TEXT, patient_antibiotics TEXT, patient_probe TEXT, sample_type TEXT,
-                patient_informe_decl TEXT, technique_maitrisee_decl TEXT, toilette_decl TEXT, flacon_sterile_decl TEXT,
-                delai_miction_depot TEXT, temperature_conservation TEXT, prescriber_name TEXT, patient_name TEXT,
-                patient_firstname TEXT, patient_phone TEXT, clinical_context TEXT, exam_requested TEXT, urgent TEXT,
-                observations_prescripteur TEXT, created_by INTEGER NOT NULL, created_by_name TEXT, status TEXT NOT NULL,
-                conformity TEXT DEFAULT 'Non évalué', rejection_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-            )""",
-            """CREATE TABLE IF NOT EXISTS lab_results(
-                request_id INTEGER PRIMARY KEY, reception_date TEXT, reception_time TEXT, aspect TEXT, leucocytes TEXT,
-                hematies TEXT, cellules_epitheliales TEXT, autres_micro TEXT, gram_result TEXT, culture_status TEXT,
-                culture_details TEXT, antibiogram_json TEXT, conclusion TEXT, validator_name TEXT, validator_title TEXT,
-                lab_operator_name TEXT, chief_validator_name TEXT, chief_validation_at TEXT, result_sent_at TEXT, quality_json TEXT
-            )""",
-            """CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, user_name TEXT, action TEXT, created_at TEXT NOT NULL)""",
-        ]
+    ddl = [
+        """CREATE TABLE IF NOT EXISTS users(
+            id SERIAL PRIMARY KEY, name TEXT NOT NULL, email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin','prescripteur','laboratoire','chef_labo')),
+            service TEXT, active INTEGER DEFAULT 0, approved INTEGER DEFAULT 0, created_at TEXT NOT NULL, suspended_at TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS requests(
+            id SERIAL PRIMARY KEY, auto_number TEXT UNIQUE, sample_number TEXT, code_prelevement TEXT,
+            date_prelevement TEXT, heure_prelevement TEXT, service_prescripteur TEXT, patient_status TEXT,
+            age TEXT, age_unit TEXT, sex TEXT, patient_antibiotics TEXT, patient_probe TEXT, sample_type TEXT,
+            patient_informe_decl TEXT, technique_maitrisee_decl TEXT, toilette_decl TEXT, flacon_sterile_decl TEXT,
+            delai_miction_depot TEXT, temperature_conservation TEXT, prescriber_name TEXT, patient_name TEXT,
+            patient_firstname TEXT, patient_phone TEXT, clinical_context TEXT, exam_requested TEXT, urgent TEXT,
+            observations_prescripteur TEXT, created_by INTEGER NOT NULL, created_by_name TEXT, status TEXT NOT NULL,
+            conformity TEXT DEFAULT 'Non évalué', rejection_reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS lab_results(
+            request_id INTEGER PRIMARY KEY, reception_date TEXT, reception_time TEXT, aspect TEXT, leucocytes TEXT,
+            hematies TEXT, cellules_epitheliales TEXT, autres_micro TEXT, gram_result TEXT, culture_status TEXT,
+            culture_details TEXT, antibiogram_json TEXT, conclusion TEXT, validator_name TEXT, validator_title TEXT,
+            lab_operator_name TEXT, chief_validator_name TEXT, chief_validation_at TEXT, result_sent_at TEXT, quality_json TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS audit(id SERIAL PRIMARY KEY, user_id INTEGER, user_name TEXT, action TEXT, created_at TEXT NOT NULL)""",
+    ]
     con = db()
     try:
         cur = con.cursor()
-        for s in ddl:
-            cur.execute(s)
+        for statement in ddl:
+            cur.execute(statement)
         con.commit()
     finally:
         con.close()
@@ -471,6 +441,7 @@ def audit_page(u):
     return page("Journal", f"<div class='card'><h2>Journal</h2><table class='table'><tr><th>Date</th><th>Utilisateur</th><th>Action</th></tr>{trs}</table></div>", u)
 
 def main():
+    print("ECBU Liaison Pro démarre avec PostgreSQL Render")
     init_db()
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="0.0.0.0")
