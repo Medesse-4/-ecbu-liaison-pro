@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.log
+.vscode/
+Thumbs.db
+Desktop.ini
+ecbu_liaison.db
