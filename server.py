@@ -3,7 +3,8 @@
 """ECBU Liaison Pro - serveur cloud stable avec PostgreSQL obligatoire.
 Démarrage Render: python server.py --host 0.0.0.0 --port $PORT
 """
-import os, json, csv, io, hmac, base64, secrets, hashlib, datetime as dt, argparse, html
+import os, json, csv, io, hmac, base64, secrets, hashlib, datetime as dt, argparse, html, smtplib, ssl
+from email.message import EmailMessage
 from functools import wraps
 from flask import Flask, request, redirect, session, Response, abort
 
@@ -143,7 +144,15 @@ def init_db():
     finally:
         con.close()
     ensure_column("users", "approved", "INTEGER DEFAULT 0")
+    ensure_column("users", "email_verified", "INTEGER DEFAULT 0")
+    ensure_column("users", "email_token", "TEXT")
+    ensure_column("users", "email_verified_at", "TEXT")
     ensure_column("audit", "ip_address", "TEXT")
+    # Migration douce : les comptes déjà approuvés restent utilisables.
+    try:
+        execute("UPDATE users SET email_verified=1, email_verified_at=? WHERE approved=1 AND active=1 AND COALESCE(email_verified,0)=0", (now(),))
+    except Exception:
+        pass
     ensure_admin()
 
 def ensure_column(table, col, ddl):
@@ -157,10 +166,11 @@ def ensure_admin():
     admin = execute("SELECT * FROM users WHERE email=?", (ADMIN_EMAIL,), fetchone=True)
     hp = hash_password(ADMIN_PASSWORD)
     if admin:
-        execute("UPDATE users SET role='admin', active=1, approved=1, password_hash=?, service='Administration' WHERE email=?", (hp, ADMIN_EMAIL))
+        execute("UPDATE users SET role='admin', active=1, approved=1, email_verified=1, email_verified_at=?, password_hash=?, service='Administration' WHERE email=?", (now(), hp, ADMIN_EMAIL))
     else:
         execute("INSERT INTO users(name,email,password_hash,role,service,active,approved,created_at) VALUES(?,?,?,?,?,?,?,?)",
                 ("Administrateur", ADMIN_EMAIL, hp, "admin", "Administration", 1, 1, now()))
+        execute("UPDATE users SET email_verified=1, email_verified_at=? WHERE email=?", (now(), ADMIN_EMAIL))
     execute("UPDATE users SET role='prescripteur', active=0, approved=0 WHERE role='admin' AND email<>?", (ADMIN_EMAIL,))
 
 def audit(action):
@@ -168,11 +178,51 @@ def audit(action):
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "") if request else ""
     execute("INSERT INTO audit(user_id,user_name,action,created_at,ip_address) VALUES(?,?,?,?,?)", (u.get('id') if u else None, u.get('name') if u else '', action, now(), ip))
 
+
+def send_verification_email(to_email, name, token):
+    """
+    Envoi d'e-mail via SMTP si les variables Render sont configurées.
+    Variables : SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, APP_BASE_URL.
+    Retourne (sent: bool, verification_link: str).
+    """
+    base_url = os.environ.get("APP_BASE_URL", request.url_root.rstrip("/") if request else "")
+    link = f"{base_url}/verify-email?token={token}"
+    host = os.environ.get("SMTP_HOST", "").strip()
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user = os.environ.get("SMTP_USER", "").strip()
+    password = os.environ.get("SMTP_PASSWORD", "").strip()
+    sender = os.environ.get("SMTP_FROM", user).strip()
+
+    if not host or not user or not password or not sender:
+        return False, link
+
+    msg = EmailMessage()
+    msg["Subject"] = "Vérification de votre compte ECBU Liaison Pro"
+    msg["From"] = sender
+    msg["To"] = to_email
+    msg.set_content(f"""Bonjour {name},
+
+Votre compte ECBU Liaison Pro a été créé.
+
+Veuillez confirmer votre adresse e-mail en ouvrant ce lien :
+{link}
+
+Après vérification de l'e-mail, l'accès restera en attente jusqu'à validation par l'administrateur.
+
+ECBU Liaison Pro
+""")
+    context = ssl.create_default_context()
+    with smtplib.SMTP(host, port, timeout=20) as server:
+        server.starttls(context=context)
+        server.login(user, password)
+        server.send_message(msg)
+    return True, link
+
 def current_user():
     uid = session.get("uid")
     if not uid:
         return None
-    return execute("SELECT * FROM users WHERE id=? AND active=1 AND approved=1", (uid,), fetchone=True)
+    return execute("SELECT * FROM users WHERE id=? AND active=1 AND approved=1 AND COALESCE(email_verified,0)=1", (uid,), fetchone=True)
 
 def role_required(*roles):
     def deco(fn):
@@ -199,7 +249,7 @@ def page(title, content, user=None, status=200):
     if user:
         items = []
         if user["role"] == "admin":
-            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/support", "Support"), ("/audit", "Journal")]
+            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/admin/reset", "Réinitialisation"), ("/support", "Support"), ("/audit", "Journal")]
         elif user["role"] == "prescripteur":
             items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives"), ("/support", "Support")]
         elif user["role"] == "laboratoire":
@@ -233,6 +283,8 @@ def login():
         u = execute("SELECT * FROM users WHERE email=?", (email,), fetchone=True)
         if not u or not verify_password(u["password_hash"], pwd):
             return page("Connexion", "<div class='login card'><h1>Accès refusé</h1><a class='btn' href='/login'>Réessayer</a></div>", None, 401)
+        if not u.get("email_verified"):
+            return page("E-mail non vérifié", "<div class='login card'><h1>E-mail non vérifié</h1><p>Veuillez confirmer votre adresse e-mail avant la validation administrative.</p><a class='btn' href='/login'>Retour</a></div>", None, 403)
         if not u.get("approved") or not u.get("active"):
             return page("Compte en attente", "<div class='login card'><h1>Compte en attente</h1><p>Votre compte doit être validé par l’administrateur.</p><a class='btn' href='/login'>Retour</a></div>", None, 403)
         session["uid"] = u["id"]
@@ -246,13 +298,45 @@ def register():
         role = formv("role")
         if role == "admin" or role not in ("prescripteur", "laboratoire", "chef_labo"):
             role = "prescripteur"
+
+        email = formv("email").lower()
+        name = formv("name")
+        token = secrets.token_urlsafe(32)
+
         try:
-            execute("INSERT INTO users(name,email,password_hash,role,service,active,approved,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                    (formv("name"), formv("email").lower(), hash_password(formv("password")), role, formv("service"), 0, 0, now()))
+            execute("""INSERT INTO users(name,email,password_hash,role,service,active,approved,email_verified,email_token,email_verified_at,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (name, email, hash_password(formv("password")), role, formv("service"), 0, 0, 0, token, "", now()))
         except Exception:
             return page("Inscription", "<div class='login card'><h1>Email déjà utilisé</h1><a class='btn' href='/register'>Retour</a></div>", None, 400)
-        return page("Inscription reçue", "<div class='login card'><h1>Compte créé</h1><p>Votre accès sera disponible après validation par l’administrateur.</p><a class='btn' href='/login'>Connexion</a></div>")
-    return page("Créer un compte", """<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Créer un compte</h1><form method='post' class='grid'><label>Nom complet<input name='name' required></label><label>Email<input name='email' type='email' required></label><label>Mot de passe<input name='password' type='password' minlength='8' required></label><label>Rôle<select name='role'><option value='prescripteur'>Clinicien prescripteur</option><option value='laboratoire'>Technicien laboratoire</option><option value='chef_labo'>Chef service laboratoire</option></select></label><label>Service<input name='service' required></label><button class='btn'>Soumettre</button></form></div>""")
+
+        try:
+            sent, link = send_verification_email(email, name, token)
+        except Exception:
+            sent, link = False, ""
+
+        if sent:
+            msg = "<p>Un e-mail de vérification vous a été envoyé. Après confirmation, l’administrateur pourra valider votre accès.</p>"
+        else:
+            msg = f"<p>Compte créé. SMTP n’est pas encore configuré, donc le lien de vérification prototype est affiché ci-dessous :</p><p><a class='btn' href='{link}'>Vérifier mon e-mail</a></p>"
+
+        audit("Demande création compte utilisateur")
+        return page("Vérification e-mail", f"<div class='login card'><h1>Compte créé</h1>{msg}<p>Après vérification de l'e-mail, le compte restera en attente de validation administrateur.</p><a class='btn sec' href='/login'>Connexion</a></div>")
+
+    return page("Créer un compte", """<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Créer un compte</h1><form method='post' class='grid'><label>Nom complet<input name='name' required></label><label>Email professionnel<input name='email' type='email' required></label><label>Mot de passe<input name='password' type='password' minlength='8' required></label><label>Rôle<select name='role'><option value='prescripteur'>Clinicien prescripteur</option><option value='laboratoire'>Technicien laboratoire</option><option value='chef_labo'>Chef service laboratoire</option></select></label><label>Service<input name='service' required></label><button class='btn'>Soumettre</button></form><p class='small'>Le compte devra confirmer son e-mail puis attendre la validation de l’administrateur.</p></div>""")
+
+@app.route("/verify-email")
+def verify_email():
+    token = request.args.get("token", "").strip()
+    if not token:
+        return page("Vérification e-mail", "<div class='login card'><h1>Lien invalide</h1><a class='btn' href='/login'>Retour</a></div>", None, 400)
+
+    user = execute("SELECT * FROM users WHERE email_token=?", (token,), fetchone=True)
+    if not user:
+        return page("Vérification e-mail", "<div class='login card'><h1>Lien invalide ou déjà utilisé</h1><a class='btn' href='/login'>Retour</a></div>", None, 400)
+
+    execute("UPDATE users SET email_verified=1, email_verified_at=?, email_token='' WHERE id=?", (now(), user["id"]))
+    return page("E-mail vérifié", "<div class='login card'><h1>E-mail vérifié</h1><p>Votre adresse e-mail est confirmée. Votre compte reste en attente de validation par l’administrateur.</p><a class='btn' href='/login'>Connexion</a></div>")
 
 @app.route("/logout")
 def logout():
@@ -286,15 +370,29 @@ def change_password():
 @app.route("/admin/users")
 @role_required("admin")
 def admin_users(u):
-    users = execute("SELECT * FROM users ORDER BY approved, role, name", fetch=True)
+    users = execute("SELECT * FROM users ORDER BY approved, email_verified, role, name", fetch=True)
     trs = ""
     for x in users:
-        status = "Approuvé" if x.get("approved") and x.get("active") else ("Suspendu" if x.get("approved") else "En attente")
+        if x.get("approved") and x.get("active"):
+            status = "Approuvé"
+        elif not x.get("email_verified"):
+            status = "E-mail non vérifié"
+        elif x.get("approved") and not x.get("active"):
+            status = "Suspendu"
+        else:
+            status = "En attente"
+
         action = ""
         if x["email"] != ADMIN_EMAIL:
-            action = f"""<form method='post' action='/admin/user-action' style='display:inline'><input type='hidden' name='id' value='{x['id']}'><button class='btn ok' name='action' value='approve'>Valider</button> <button class='btn sec' name='action' value='toggle'>Suspendre/Réactiver</button> <button class='btn bad' name='action' value='delete'>Supprimer</button></form>"""
-        trs += f"<tr><td>{x['name']}</td><td>{x['email']}</td><td>{x['role']}</td><td>{x.get('service','')}</td><td>{pill(status)}</td><td>{action}</td></tr>"
-    return page("Utilisateurs", f"<div class='card'><h2>Gestion des comptes</h2><table class='table'><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Service</th><th>Statut</th><th>Action</th></tr>{trs}</table></div>", u)
+            disabled = "disabled title='E-mail non vérifié'" if not x.get("email_verified") else ""
+            action = f"""<form method='post' action='/admin/user-action' style='display:inline'>
+                <input type='hidden' name='id' value='{x['id']}'>
+                <button class='btn ok' name='action' value='approve' {disabled}>Valider</button>
+                <button class='btn sec' name='action' value='toggle'>Suspendre/Réactiver</button>
+                <button class='btn bad' name='action' value='delete'>Supprimer</button>
+            </form>"""
+        trs += f"<tr><td>{x['name']}</td><td>{x['email']}</td><td>{x['role']}</td><td>{x.get('service','')}</td><td>{'Oui' if x.get('email_verified') else 'Non'}</td><td>{pill(status)}</td><td>{action}</td></tr>"
+    return page("Utilisateurs", f"<div class='card'><h2>Gestion des comptes</h2><div class='msg'>Un compte ne peut être validé qu’après vérification de son e-mail.</div><table class='table'><tr><th>Nom</th><th>Email</th><th>Rôle</th><th>Service</th><th>E-mail vérifié</th><th>Statut</th><th>Action</th></tr>{trs}</table></div>", u)
 
 @app.route("/admin/user-action", methods=["POST"])
 @role_required("admin")
@@ -303,7 +401,11 @@ def user_action(u):
     target = execute("SELECT * FROM users WHERE id=?", (uid,), fetchone=True)
     if target and target["email"] != ADMIN_EMAIL:
         if act == "approve":
+            if not target.get("email_verified"):
+                audit("Tentative validation compte sans e-mail vérifié")
+                return redirect("/admin/users")
             execute("UPDATE users SET approved=1, active=1, suspended_at=NULL WHERE id=?", (uid,))
+            audit("Validation compte utilisateur")
         elif act == "toggle":
             new = 0 if target.get("active") else 1
             execute("UPDATE users SET active=?, approved=1, suspended_at=? WHERE id=?", (new, now() if not new else None, uid))
@@ -779,6 +881,54 @@ def report():
     """
     return page("Bon de résultat", content, u)
 
+
+
+@app.route("/admin/reset", methods=["GET", "POST"])
+@role_required("admin")
+def admin_reset(u):
+    if request.method == "POST":
+        pwd = formv("password")
+        confirm = formv("confirm")
+        fresh = execute("SELECT * FROM users WHERE id=? AND email=?", (u["id"], ADMIN_EMAIL), fetchone=True)
+
+        if not fresh or not verify_password(fresh["password_hash"], pwd):
+            return page("Réinitialisation", "<div class='card'><h2>Mot de passe incorrect</h2><p>La réinitialisation n’a pas été effectuée.</p><a class='btn' href='/admin/reset'>Réessayer</a></div>", u, 403)
+
+        if confirm != "REINITIALISER":
+            return page("Réinitialisation", "<div class='card'><h2>Confirmation incorrecte</h2><p>Vous devez écrire exactement REINITIALISER.</p><a class='btn' href='/admin/reset'>Réessayer</a></div>", u, 400)
+
+        tables = ["lab_results", "requests", "non_conformities", "capa_actions", "support_tickets", "audit"]
+        con = db()
+        try:
+            cur = con.cursor()
+            for table in tables:
+                cur.execute(f"DELETE FROM {table}")
+            for table in tables:
+                try:
+                    cur.execute(f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1")
+                except Exception:
+                    pass
+            con.commit()
+        finally:
+            con.close()
+
+        audit("Réinitialisation complète des données d'analyses")
+        return page("Réinitialisation terminée", "<div class='card'><h2>Réinitialisation effectuée</h2><p>Toutes les données d’analyses, résultats, non-conformités, CAPA, tickets et journaux ont été remises à zéro. Les comptes utilisateurs sont conservés.</p><a class='btn' href='/admin/users'>Retour administration</a></div>", u)
+
+    return page("Réinitialisation", """
+    <div class='card'>
+      <h2>Réinitialisation des données</h2>
+      <div class='msg' style='border-left-color:#b91c1c;background:#fff1f2;color:#7f1d1d'>
+        Cette action supprime définitivement toutes les demandes, résultats, non-conformités, CAPA, tickets et journaux.
+        Les comptes utilisateurs sont conservés. Cette opération est réservée à l’administrateur.
+      </div>
+      <form method='post' class='grid g2' style='margin-top:15px'>
+        <label>Mot de passe administrateur<input type='password' name='password' required></label>
+        <label>Écrire exactement REINITIALISER<input name='confirm' required></label>
+        <div><button class='btn bad'>Remettre les données à zéro</button></div>
+      </form>
+    </div>
+    """, u)
 
 @app.route("/admin/export")
 @role_required("admin")
