@@ -327,11 +327,26 @@ def new_request(u):
 def request_table(u, rows_, title, lab=False, chief=False):
     trs = ""
     for r in rows_:
-        actions = f"<a class='btn sec' href='/report?id={r['id']}'>Bon</a> "
+        status = r.get("status")
+        actions = ""
+
+        if status != "Supprimé":
+            actions += f"<a class='btn sec' href='/report?id={r['id']}'>Bon</a> "
+
         if lab:
-            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a>"
-        if chief and r['status'] == "En attente validation chef":
-            actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider</button></form>"
+            if status not in ("Validé et envoyé", "Supprimé"):
+                actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a> "
+                actions += f"""<form method='post' action='/lab/delete' style='display:inline' onsubmit="return confirm('Supprimer cette demande de l’espace laboratoire ?');"><input type='hidden' name='id' value='{r['id']}'><button class='btn bad'>Supprimer</button></form> """
+            elif status == "Validé et envoyé":
+                actions += f"<a class='btn sec' href='/lab/edit?id={r['id']}'>Consulter</a> "
+
+        if chief:
+            if status == "En attente validation chef":
+                actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Corriger</a> "
+                actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider et envoyer</button></form>"
+            elif status == "Validé et envoyé":
+                actions += f"<a class='btn sec' href='/lab/edit?id={r['id']}'>Consulter</a> "
+
         trs += f"<tr><td>{r['auto_number']}</td><td>{r.get('sample_number') or 'À attribuer'}</td><td>{r['service_prescripteur']}</td><td>{r['patient_name']} {r['patient_firstname']}</td><td>{pill(r['status'])}</td><td>{pill(r['conformity'])}</td><td>{actions}</td></tr>"
     return page(title, f"<div class='card'><h2>{title}</h2><table class='table'><tr><th>N° demande</th><th>N° échantillon</th><th>Service</th><th>Patient</th><th>Statut</th><th>Conformité</th><th>Action</th></tr>{trs or '<tr><td colspan=7>Aucune donnée.</td></tr>'}</table></div>", u)
 
@@ -355,34 +370,213 @@ def lab_processed(u):
     return request_table(u, rows_, "Archives laboratoire", lab=(u["role"]=="laboratoire"), chief=(u["role"]=="chef_labo"))
 
 @app.route("/lab/edit", methods=["GET","POST"])
-@role_required("laboratoire")
+@role_required("laboratoire", "chef_labo")
 def lab_edit(u):
     rid = request.values.get("id", "")
     r = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
     if not r:
-        return redirect("/lab/inbox")
+        return redirect("/lab/inbox" if u["role"] == "laboratoire" else "/chief/pending")
+
+    if r.get("status") == "Supprimé":
+        return page("Demande supprimée", "<div class='card'><h2>Demande supprimée</h2><p>Cette demande n’est plus disponible.</p></div>", u, 403)
+
+    l = execute("SELECT * FROM lab_results WHERE request_id=?", (rid,), fetchone=True) or {}
+
+    def esc(v):
+        return html.escape(str(v or ""), quote=True)
+
+    def selected(current, value):
+        return "selected" if str(current or "") == value else ""
+
+    def checked(name):
+        try:
+            quality = json.loads(l.get("quality_json") or "[]")
+        except Exception:
+            quality = []
+        return "checked" if name in quality else ""
+
     if request.method == "POST":
         quality = [k for k,_ in RULES if request.form.get(k) == "on"]
         conformity = "Conforme" if len(quality) == len(RULES) else "Non conforme"
+
         atbs = []
         for i,a in enumerate(ANTIBIOTICS):
-            atbs.append({"name": a, "diam": formv(f"diam_{i}"), "interp": formv(f"interp_{i}"), "show": formv(f"show_{i}") == "Oui"})
-        execute("UPDATE requests SET sample_number=?, status='En attente validation chef', conformity=?, updated_at=? WHERE id=?", (formv("sample_number"), conformity, now(), rid))
+            atbs.append({
+                "name": a,
+                "diam": formv(f"diam_{i}"),
+                "interp": formv(f"interp_{i}"),
+                "show": formv(f"show_{i}") == "Oui"
+            })
+
+        send_mode = formv("send_mode")
+        new_status = "En attente validation chef"
+
+        if u["role"] == "laboratoire" and send_mode == "direct":
+            new_status = "Validé et envoyé"
+        elif u["role"] == "chef_labo" and send_mode == "chief_validate":
+            new_status = "Validé et envoyé"
+
+        execute(
+            "UPDATE requests SET sample_number=?, status=?, conformity=?, updated_at=? WHERE id=?",
+            (formv("sample_number"), new_status, conformity, now(), rid)
+        )
+
         old = execute("SELECT request_id FROM lab_results WHERE request_id=?", (rid,), fetchone=True)
-        vals = (rid, formv("reception_date"), formv("reception_time"), formv("aspect"), formv("leucocytes"), formv("hematies"), formv("cellules_epitheliales"), formv("autres_micro"), formv("gram_result"), formv("culture_status"), formv("culture_details"), json.dumps(atbs, ensure_ascii=False), formv("conclusion"), formv("validator_name"), formv("validator_title"), u["name"], json.dumps(quality, ensure_ascii=False))
+        vals = (
+            rid,
+            formv("reception_date"),
+            formv("reception_time"),
+            formv("aspect"),
+            formv("leucocytes"),
+            formv("hematies"),
+            formv("cellules_epitheliales"),
+            formv("autres_micro"),
+            formv("gram_result"),
+            formv("culture_status"),
+            formv("culture_details"),
+            json.dumps(atbs, ensure_ascii=False),
+            formv("conclusion"),
+            formv("validator_name"),
+            formv("validator_title"),
+            u["name"],
+            json.dumps(quality, ensure_ascii=False)
+        )
+
         if old:
-            execute("""UPDATE lab_results SET reception_date=?, reception_time=?, aspect=?, leucocytes=?, hematies=?, cellules_epitheliales=?, autres_micro=?, gram_result=?, culture_status=?, culture_details=?, antibiogram_json=?, conclusion=?, validator_name=?, validator_title=?, lab_operator_name=?, quality_json=? WHERE request_id=?""", vals[1:] + (rid,))
+            execute(
+                """UPDATE lab_results SET reception_date=?, reception_time=?, aspect=?, leucocytes=?, hematies=?,
+                cellules_epitheliales=?, autres_micro=?, gram_result=?, culture_status=?, culture_details=?,
+                antibiogram_json=?, conclusion=?, validator_name=?, validator_title=?, lab_operator_name=?, quality_json=?
+                WHERE request_id=?""",
+                vals[1:] + (rid,)
+            )
         else:
-            execute("""INSERT INTO lab_results(request_id,reception_date,reception_time,aspect,leucocytes,hematies,cellules_epitheliales,autres_micro,gram_result,culture_status,culture_details,antibiogram_json,conclusion,validator_name,validator_title,lab_operator_name,quality_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", vals)
-        return redirect("/lab/processed")
-    checks = "".join(f"<label><input type='checkbox' name='{k}'> {v}</label>" for k,v in RULES)
-    atb_rows = "".join(f"<tr><td>{a}</td><td><input name='diam_{i}'></td><td><select name='interp_{i}'><option>ND</option><option>S</option><option>I</option><option>R</option></select></td><td><select name='show_{i}'><option>Non</option><option>Oui</option></select></td></tr>" for i,a in enumerate(ANTIBIOTICS))
-    return page("Traitement laboratoire", f"""<div class='card'><h2>Traitement — {r['auto_number']}</h2><form method='post'><input type='hidden' name='id' value='{rid}'><div class='grid g3'><label>N° d’échantillon<input name='sample_number' value='{r.get('sample_number') or ''}' required></label><label>Date réception<input type='date' name='reception_date' required></label><label>Heure réception<input type='time' name='reception_time' required></label></div><h3>Conformité</h3><div class='grid g3'>{checks}</div><h3>Résultats</h3><div class='grid g3'><label>Aspect<input name='aspect'></label><label>Leucocytes GB/ml<input name='leucocytes'></label><label>Hématies GR/ml<input name='hematies'></label><label>Cellules épithéliales<input name='cellules_epitheliales'></label><label>Autres<input name='autres_micro'></label><label>Culture<select name='culture_status'><option>Positive</option><option>Négative</option><option>Contaminée</option><option>Rejetée</option></select></label><label style='grid-column:1/-1'>Coloration de Gram<textarea name='gram_result'></textarea></label><label style='grid-column:1/-1'>Culture / germe<textarea name='culture_details'></textarea></label><label style='grid-column:1/-1'>Conclusion<textarea name='conclusion'></textarea></label><label>Validateur proposé<input name='validator_name'></label><label>Titre validateur<input name='validator_title'></label></div><h3>Antibiogramme EUCAST</h3><table class='table'><tr><th>Antibiotique</th><th>Diamètre</th><th>S/I/R</th><th>Afficher</th></tr>{atb_rows}</table><br><button class='btn ok'>Envoyer au chef laboratoire</button></form><form method='post' action='/lab/reject' style='margin-top:12px'><input type='hidden' name='id' value='{rid}'><label>Motif de rejet<textarea name='reason' required></textarea></label><button class='btn bad'>Rejeter</button></form></div>""", u)
+            execute(
+                """INSERT INTO lab_results(request_id,reception_date,reception_time,aspect,leucocytes,hematies,
+                cellules_epitheliales,autres_micro,gram_result,culture_status,culture_details,antibiogram_json,
+                conclusion,validator_name,validator_title,lab_operator_name,quality_json)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                vals
+            )
+
+        if new_status == "Validé et envoyé":
+            if u["role"] == "chef_labo":
+                execute(
+                    "UPDATE lab_results SET chief_validator_name=?, chief_validation_at=?, result_sent_at=? WHERE request_id=?",
+                    (u["name"], now(), now(), rid)
+                )
+                audit("Correction chef laboratoire puis validation/envoi")
+            else:
+                execute(
+                    "UPDATE lab_results SET result_sent_at=? WHERE request_id=?",
+                    (now(), rid)
+                )
+                audit("Validation directe par le laboratoire en absence du chef")
+            return redirect("/lab/processed" if u["role"] == "laboratoire" else "/chief/all")
+
+        audit("Enregistrement/correction du résultat laboratoire")
+        return redirect("/lab/processed" if u["role"] == "laboratoire" else "/chief/pending")
+
+    try:
+        old_atb = json.loads(l.get("antibiogram_json") or "[]")
+    except Exception:
+        old_atb = []
+    old_map = {x.get("name"): x for x in old_atb if isinstance(x, dict)}
+
+    checks = "".join(f"<label><input type='checkbox' name='{k}' {checked(k)}> {v}</label>" for k,v in RULES)
+    atb_rows = ""
+    for i,a in enumerate(ANTIBIOTICS):
+        old = old_map.get(a, {})
+        interp = old.get("interp", "ND")
+        show = "Oui" if old.get("show") else "Non"
+        atb_rows += f"""<tr>
+            <td>{esc(a)}</td>
+            <td><input name='diam_{i}' value='{esc(old.get("diam",""))}'></td>
+            <td><select name='interp_{i}'>
+                <option {selected(interp,'ND')}>ND</option>
+                <option {selected(interp,'S')}>S</option>
+                <option {selected(interp,'I')}>I</option>
+                <option {selected(interp,'R')}>R</option>
+            </select></td>
+            <td><select name='show_{i}'>
+                <option {selected(show,'Non')}>Non</option>
+                <option {selected(show,'Oui')}>Oui</option>
+            </select></td>
+        </tr>"""
+
+    if u["role"] == "laboratoire":
+        main_buttons = """
+        <button class='btn ok' name='send_mode' value='chief'>Enregistrer et envoyer au chef laboratoire</button>
+        <button class='btn' name='send_mode' value='direct' onclick="return confirm('Confirmer l’envoi direct au prescripteur sans validation du chef laboratoire ?');">Envoyer directement au prescripteur</button>
+        """
+    else:
+        main_buttons = """
+        <button class='btn sec' name='send_mode' value='save'>Enregistrer les corrections</button>
+        <button class='btn ok' name='send_mode' value='chief_validate'>Valider et envoyer au prescripteur</button>
+        """
+
+    titre_page = "Correction chef laboratoire" if u["role"] == "chef_labo" else "Traitement laboratoire"
+    readonly_note = ""
+    if r.get("status") == "Validé et envoyé":
+        readonly_note = "<div class='msg'>Ce résultat est déjà validé et envoyé. Toute correction doit être faite avec prudence et sera tracée.</div>"
+
+    return page(titre_page, f"""<div class='card'><h2>{titre_page} — {esc(r['auto_number'])}</h2>{readonly_note}
+    <form method='post'>
+      <input type='hidden' name='id' value='{esc(rid)}'>
+      <div class='grid g3'>
+        <label>N° d’échantillon<input name='sample_number' value='{esc(r.get('sample_number') or '')}' required></label>
+        <label>Date réception<input type='date' name='reception_date' value='{esc(l.get('reception_date'))}' required></label>
+        <label>Heure réception<input type='time' name='reception_time' value='{esc(l.get('reception_time'))}' required></label>
+      </div>
+
+      <h3>Conformité</h3>
+      <div class='grid g3'>{checks}</div>
+
+      <h3>Résultats</h3>
+      <div class='grid g3'>
+        <label>Aspect<input name='aspect' value='{esc(l.get('aspect'))}'></label>
+        <label>Leucocytes GB/ml<input name='leucocytes' value='{esc(l.get('leucocytes'))}'></label>
+        <label>Hématies GR/ml<input name='hematies' value='{esc(l.get('hematies'))}'></label>
+        <label>Cellules épithéliales<input name='cellules_epitheliales' value='{esc(l.get('cellules_epitheliales'))}'></label>
+        <label>Autres<input name='autres_micro' value='{esc(l.get('autres_micro'))}'></label>
+        <label>Culture<select name='culture_status'>
+            <option {selected(l.get('culture_status'),'Positive')}>Positive</option>
+            <option {selected(l.get('culture_status'),'Négative')}>Négative</option>
+            <option {selected(l.get('culture_status'),'Contaminée')}>Contaminée</option>
+            <option {selected(l.get('culture_status'),'Rejetée')}>Rejetée</option>
+        </select></label>
+        <label style='grid-column:1/-1'>Coloration de Gram<textarea name='gram_result'>{esc(l.get('gram_result'))}</textarea></label>
+        <label style='grid-column:1/-1'>Culture / germe<textarea name='culture_details'>{esc(l.get('culture_details'))}</textarea></label>
+        <label style='grid-column:1/-1'>Conclusion<textarea name='conclusion'>{esc(l.get('conclusion'))}</textarea></label>
+        <label>Validateur proposé<input name='validator_name' value='{esc(l.get('validator_name'))}'></label>
+        <label>Titre validateur<input name='validator_title' value='{esc(l.get('validator_title'))}'></label>
+      </div>
+
+      <h3>Antibiogramme EUCAST</h3>
+      <table class='table'><tr><th>Antibiotique</th><th>Diamètre</th><th>S/I/R</th><th>Afficher</th></tr>{atb_rows}</table>
+      <br>{main_buttons}
+    </form>
+    <form method='post' action='/lab/reject' style='margin-top:12px'>
+      <input type='hidden' name='id' value='{esc(rid)}'>
+      <label>Motif de rejet<textarea name='reason' required></textarea></label>
+      <button class='btn bad'>Rejeter</button>
+    </form></div>""", u)
 
 @app.route("/lab/reject", methods=["POST"])
 @role_required("laboratoire")
 def lab_reject(u):
     execute("UPDATE requests SET status='Rejeté', conformity='Non conforme', rejection_reason=?, updated_at=? WHERE id=?", (formv("reason"), now(), formv("id")))
+    audit("Rejet prélèvement par le laboratoire")
+    return redirect("/lab/inbox")
+
+@app.route("/lab/delete", methods=["POST"])
+@role_required("laboratoire")
+def lab_delete(u):
+    rid = formv("id")
+    r = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
+    if r and r.get("status") != "Validé et envoyé":
+        execute("UPDATE requests SET status='Supprimé', updated_at=? WHERE id=?", (now(), rid))
+        audit("Suppression logique d’une demande par le laboratoire")
     return redirect("/lab/inbox")
 
 @app.route("/chief/pending")
