@@ -474,12 +474,12 @@ def report():
         <div class='strict-bon'>
           <div class='bf bold' style='left:73.5%;top:8.2%;width:23%;height:2.1%'>{esc(r.get('sample_number'))}</div>
           <div class='bf bold' style='left:14.2%;top:13.55%;width:35%;height:2.0%'>{esc(nom_prenom)}</div>
-          <div class='bf bold' style='left:54.6%;top:13.55%;width:32%;height:2.0%'>{esc(r.get('auto_number'))}</div>
+          
           <div class='bf' style='left:14.2%;top:15.82%;width:34%;height:2.0%'>{esc(age_sexe)}</div>
           <div class='bf' style='left:66.0%;top:15.82%;width:28%;height:2.0%'>{esc(r.get('prescriber_name'))}</div>
           <div class='bf' style='left:18.8%;top:18.05%;width:30%;height:2.0%'>{esc(date_prelevement)}</div>
           <div class='bf' style='left:66.0%;top:18.05%;width:28%;height:2.0%'>{esc(date_reception)}</div>
-          <div class='bf' style='left:21.0%;top:20.55%;width:28%;height:2.2%'>{esc(r.get('sample_type'))}</div>
+          <div class='bf bold' style='left:21.0%;top:20.55%;width:28%;height:2.2%'>Urine</div>
           <div class='bf' style='left:66.0%;top:20.55%;width:28%;height:2.2%'>{esc(r.get('service_prescripteur'))}</div>
           <div class='bf bold' style='left:22.0%;top:28.05%;width:70%;height:4.4%'>{esc(l.get('aspect'))}</div>
           <div class='bf' style='left:22.0%;top:35.35%;width:16%;height:1.5%'>{esc(l.get('leucocytes'))}</div>
