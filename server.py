@@ -415,10 +415,40 @@ def report():
     l = execute("SELECT * FROM lab_results WHERE request_id=?", (rid,), fetchone=True) or {}
     if not r:
         abort(404)
+
+    # Confidentialité : l'administrateur ne consulte jamais les données biologiques.
     if u["role"] == "admin":
         return page("Accès interdit", "<div class='card'>Données médicales non accessibles à l’administrateur.</div>", u, 403)
-    if u["role"] == "prescripteur" and r["created_by"] != u["id"]:
-        return page("Accès interdit", "<div class='card'>Ce résultat appartient à un autre prescripteur.</div>", u, 403)
+
+    # Un prélèvement rejeté ne génère jamais de bon de résultat.
+    if r.get("status") == "Rejeté" or r.get("conformity") == "Non conforme" and not l:
+        return page(
+            "Bon indisponible",
+            "<div class='card'><h2>Bon non généré</h2><p>Ce prélèvement a été rejeté ou déclaré non conforme avant validation. Aucun bon de résultat ne doit être produit pour ce dossier.</p></div>",
+            u,
+            403,
+        )
+
+    # Le prescripteur ne voit le résultat qu'après validation finale et envoi par le chef laboratoire.
+    if u["role"] == "prescripteur":
+        if r["created_by"] != u["id"]:
+            return page("Accès interdit", "<div class='card'>Ce résultat appartient à un autre prescripteur.</div>", u, 403)
+        if r.get("status") != "Validé et envoyé":
+            return page(
+                "Résultat non disponible",
+                "<div class='card'><h2>Résultat non encore disponible</h2><p>Le laboratoire n’a pas encore validé et envoyé ce résultat. Le bon sera accessible uniquement après validation finale.</p></div>",
+                u,
+                403,
+            )
+
+    # Le bon n'est affiché que si un résultat laboratoire existe.
+    if not l:
+        return page(
+            "Résultat non disponible",
+            "<div class='card'><h2>Résultat non encore saisi</h2><p>Aucun résultat laboratoire n’est disponible pour ce dossier.</p></div>",
+            u,
+            404,
+        )
 
     def esc(v):
         return html.escape(str(v or ""), quote=True)
@@ -426,6 +456,7 @@ def report():
     culture = l.get("culture_status", "")
     culture_text = (culture + ("\n" + (l.get("culture_details") or "") if l.get("culture_details") else "")).strip()
 
+    # Antibiogramme : uniquement si culture positive, sinon non applicable.
     if culture == "Positive":
         groups = {"S": [], "I": [], "R": []}
         try:
@@ -456,15 +487,15 @@ def report():
         return f"<div class='strict-field {cls}'>{esc(text)}</div>"
 
     fields_html = "".join([
+        field("f-date-prel", f"{r.get('date_prelevement','')} {r.get('heure_prelevement','')}"),
         field("f-sample", r.get("sample_number", "")),
-        field("f-name", f"{r.get('patient_name','')} {r.get('patient_firstname','')}"),
+        field("f-date-rec", f"{l.get('reception_date','')} {l.get('reception_time','')}"),
         field("f-labo", r.get("auto_number", "")),
+        field("f-name", f"{r.get('patient_name','')} {r.get('patient_firstname','')}"),
         field("f-sexage", f"{r.get('sex','')} / {r.get('age','')} {r.get('age_unit','')}"),
         field("f-prescriber", r.get("prescriber_name", "")),
-        field("f-date-prel", f"{r.get('date_prelevement','')} {r.get('heure_prelevement','')}"),
-        field("f-date-rec", f"{l.get('reception_date','')} {l.get('reception_time','')}"),
-        field("f-nature", r.get("sample_type", "")),
         field("f-service", r.get("service_prescripteur", "")),
+        field("f-nature", r.get("sample_type", "")),
         field("f-aspect", l.get("aspect", "")),
         field("f-leuco", l.get("leucocytes", "")),
         field("f-hema", l.get("hematies", "")),
@@ -474,33 +505,39 @@ def report():
         field("f-culture", culture_text),
         field("f-atb", atb_text),
         field("f-conclusion", l.get("conclusion", "")),
+        field("f-validateur", l.get("validator_name") or l.get("chief_validator_name") or ""),
+        field("f-titre-validateur", l.get("validator_title", "")),
     ])
 
+    # Le PDF officiel fourni sert uniquement de fond visuel strict.
+    # Le design n'est pas redessiné : seules les valeurs sont positionnées dans les zones prévues.
     content = f"""
     <div class='card printCard strict-wrapper'>
       <style>
         .strict-wrapper{{background:#fff;overflow:auto}}
         .strict-bon{{position:relative;width:210mm;height:297mm;margin:0 auto;background:#fff url('/static/bon_officiel.png') center top/210mm 297mm no-repeat;box-shadow:0 0 0 1px #ddd}}
-        .strict-field{{position:absolute;font-family:Arial, sans-serif;font-size:10.2pt;line-height:1.15;color:#000;white-space:pre-wrap;overflow:hidden;word-break:break-word}}
-        .f-sample{{left:88.8%;top:8.7%;width:10.2%;height:2.0%;font-weight:bold;text-align:center}}
-        .f-name{{left:22.6%;top:13.95%;width:25.8%;height:1.9%;font-weight:bold}}
-        .f-labo{{left:59.8%;top:13.95%;width:32.0%;height:1.9%;font-weight:bold}}
-        .f-sexage{{left:22.6%;top:15.95%;width:25.8%;height:1.9%}}
-        .f-prescriber{{left:66.0%;top:15.95%;width:26.0%;height:1.9%}}
-        .f-date-prel{{left:22.6%;top:18.0%;width:25.8%;height:1.9%}}
-        .f-date-rec{{left:66.0%;top:18.0%;width:26.0%;height:1.9%}}
-        .f-nature{{left:22.6%;top:20.95%;width:25.8%;height:1.9%}}
-        .f-service{{left:66.0%;top:20.95%;width:26.0%;height:1.9%}}
-        .f-aspect{{left:22.8%;top:29.3%;width:69.3%;height:3.0%;font-weight:bold}}
-        .f-leuco{{left:23.0%;top:37.15%;width:14.5%;height:1.45%}}
-        .f-hema{{left:23.0%;top:38.75%;width:14.5%;height:1.45%}}
-        .f-cell{{left:23.0%;top:41.25%;width:14.5%;height:1.45%}}
-        .f-autres{{left:23.0%;top:43.8%;width:14.5%;height:1.45%}}
-        .f-gram{{left:22.8%;top:51.1%;width:69.3%;height:3.8%;font-weight:bold}}
-        .f-culture{{left:5.5%;top:58.1%;width:42.0%;height:12.0%;font-size:9.4pt}}
-        .f-atb{{left:52.0%;top:58.1%;width:41.0%;height:12.0%;font-size:8.6pt}}
-        .f-conclusion{{left:5.5%;top:74.5%;width:87.0%;height:7.0%;font-size:10pt;font-weight:bold}}
-        @media(max-width:900px){{.strict-bon{{width:100%;height:auto;aspect-ratio:210/297;background-size:100% 100%}}.strict-field{{font-size:2.1vw}}.f-atb{{font-size:1.7vw}}.f-culture{{font-size:1.8vw}}}}
+        .strict-field{{position:absolute;font-family:Arial, sans-serif;font-size:9.8pt;line-height:1.12;color:#000;white-space:pre-wrap;overflow:hidden;word-break:break-word}}
+        .f-date-prel{{left:24.0%;top:12.25%;width:23.0%;height:1.9%}}
+        .f-sample{{left:77.0%;top:12.25%;width:17.0%;height:1.9%;font-weight:bold}}
+        .f-date-rec{{left:24.0%;top:14.45%;width:23.0%;height:1.9%}}
+        .f-labo{{left:77.0%;top:14.45%;width:17.0%;height:1.9%;font-weight:bold}}
+        .f-name{{left:24.0%;top:21.05%;width:28.5%;height:1.9%;font-weight:bold}}
+        .f-sexage{{left:24.0%;top:23.25%;width:28.5%;height:1.9%}}
+        .f-prescriber{{left:73.5%;top:23.25%;width:20.0%;height:1.9%}}
+        .f-service{{left:73.5%;top:25.45%;width:20.0%;height:1.9%}}
+        .f-nature{{left:24.0%;top:27.65%;width:28.5%;height:1.9%}}
+        .f-aspect{{left:21.5%;top:36.15%;width:72.0%;height:3.2%;font-weight:bold}}
+        .f-leuco{{left:24.0%;top:45.55%;width:16.0%;height:1.55%}}
+        .f-hema{{left:24.0%;top:47.45%;width:16.0%;height:1.55%}}
+        .f-cell{{left:24.0%;top:50.45%;width:16.0%;height:1.55%}}
+        .f-autres{{left:24.0%;top:53.45%;width:16.0%;height:1.55%}}
+        .f-gram{{left:21.5%;top:61.60%;width:72.0%;height:4.3%;font-weight:bold}}
+        .f-culture{{left:6.5%;top:70.55%;width:39.0%;height:9.0%;font-size:8.9pt}}
+        .f-atb{{left:53.0%;top:70.55%;width:40.0%;height:9.0%;font-size:7.8pt;line-height:1.08}}
+        .f-conclusion{{left:6.5%;top:84.0%;width:87.0%;height:5.8%;font-size:9.4pt;font-weight:bold}}
+        .f-validateur{{left:68.5%;top:93.0%;width:25.0%;height:1.6%;font-size:9.4pt;text-align:center}}
+        .f-titre-validateur{{left:68.5%;top:94.7%;width:25.0%;height:1.6%;font-size:9.2pt;text-align:center}}
+        @media(max-width:900px){{.strict-bon{{width:100%;height:auto;aspect-ratio:210/297;background-size:100% 100%}}.strict-field{{font-size:2.0vw}}.f-atb{{font-size:1.55vw}}.f-culture{{font-size:1.75vw}}}}
         @media print{{@page{{size:A4 portrait;margin:0}}body{{background:#fff!important}}.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block!important}}.content{{padding:0!important;margin:0!important;max-width:none!important}}.printCard{{display:block!important;border:0!important;box-shadow:none!important;padding:0!important;margin:0!important}}.strict-bon{{width:210mm!important;height:297mm!important;margin:0!important;box-shadow:none!important;background-size:210mm 297mm!important}}}}
       </style>
       <div class='strict-bon'>{fields_html}</div>
