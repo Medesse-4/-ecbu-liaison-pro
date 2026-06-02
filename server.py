@@ -417,81 +417,186 @@ def report():
     if not r:
         abort(404)
 
+    # Confidentialité : l'administrateur ne consulte pas les données biologiques.
     if u["role"] == "admin":
         return page("Accès interdit", "<div class='card'>Données médicales non accessibles à l’administrateur.</div>", u, 403)
 
+    # Le prescripteur ne voit le résultat que lorsque le chef laboratoire l'a validé et envoyé.
     if u["role"] == "prescripteur":
         if r["created_by"] != u["id"]:
             return page("Accès interdit", "<div class='card'>Ce résultat appartient à un autre prescripteur.</div>", u, 403)
         if r.get("status") != "Validé et envoyé":
             return page("Résultat non disponible", "<div class='card'><h2>Résultat non encore disponible</h2><p>Le laboratoire n’a pas encore validé et envoyé ce résultat.</p></div>", u, 403)
 
-    if r.get("status") == "Rejeté" or l.get("culture_status") == "Rejetée":
+    # Aucun bon n'est généré pour un prélèvement rejeté.
+    if r.get("status") == "Rejeté" or (l.get("culture_status") or "") == "Rejetée":
         return page("Bon non disponible", "<div class='card'><h2>Bon non disponible</h2><p>Ce prélèvement a été rejeté. Aucun bon de résultat ne doit être généré.</p></div>", u, 403)
-
-    culture = l.get("culture_status", "") or ""
 
     def esc(v):
         return html.escape(str(v or ""), quote=True)
 
-    def lines_for_antibiogram():
+    def text_or_dash(v):
+        v = str(v or "").strip()
+        return esc(v if v else "—")
+
+    culture = (l.get("culture_status") or "").strip()
+    sample_number = (r.get("sample_number") or "").strip() or "Non attribué"
+    nom_prenom = f"{r.get('patient_name','')} {r.get('patient_firstname','')}".strip()
+    age_sexe = f"{r.get('sex','')} / {r.get('age','')} {r.get('age_unit','')}".strip()
+    date_prelevement = f"{r.get('date_prelevement','')} {r.get('heure_prelevement','')}".strip()
+    date_reception = f"{l.get('reception_date','')} {l.get('reception_time','')}".strip()
+    validateur = (l.get("validator_name") or l.get("chief_validator_name") or "").strip()
+    titre_validateur = (l.get("validator_title") or "").strip()
+
+    def antibiogramme_html():
         if culture != "Positive":
-            return "Antibiogramme : Non applicable"
+            return "<div class='na-box'>Antibiogramme : Non applicable</div>"
         groups = {"S": [], "I": [], "R": []}
         try:
             data = json.loads(l.get("antibiogram_json") or "[]")
         except Exception:
             data = []
-        for a in data:
-            if a.get("show") and a.get("interp") in groups:
-                txt = str(a.get("name") or "")
-                if a.get("diam"):
-                    txt += f" ({a.get('diam')} mm)"
-                groups[a["interp"]].append(txt)
-        return "SENSIBLES\n" + ("\n".join(groups["S"]) or "—") + "\n\nINTERMÉDIAIRES\n" + ("\n".join(groups["I"]) or "—") + "\n\nRÉSISTANTS\n" + ("\n".join(groups["R"]) or "—")
-
-    antibio_text = lines_for_antibiogram()
-    nom_prenom = f"{r.get('patient_name','')} {r.get('patient_firstname','')}".strip()
-    age_sexe = f"{r.get('sex','')} / {r.get('age','')} {r.get('age_unit','')}".strip()
-    date_prelevement = f"{r.get('date_prelevement','')} {r.get('heure_prelevement','')}".strip()
-    date_reception = f"{l.get('reception_date','')} {l.get('reception_time','')}".strip()
-    culture_text = (culture + ("\n" + (l.get("culture_details") or "") if l.get("culture_details") else "")).strip()
-    validateur = (l.get("validator_name") or l.get("chief_validator_name") or "").strip()
-    titre_validateur = (l.get("validator_title") or "").strip()
+        for item in data:
+            if item.get("show") and item.get("interp") in groups:
+                name = str(item.get("name") or "").strip()
+                diam = str(item.get("diam") or "").strip()
+                label = esc(name + (f" ({diam} mm)" if diam else ""))
+                groups[item["interp"]].append(label)
+        def col(title, values):
+            body = "".join(f"<li>{v}</li>" for v in values) if values else "<li>—</li>"
+            return f"<div class='abg-col'><div class='abg-title'>{title}</div><ul>{body}</ul></div>"
+        return "<div class='abg-grid'>" + col("Sensibles", groups["S"]) + col("Intermédiaires", groups["I"]) + col("Résistants", groups["R"]) + "</div>"
 
     content = f"""
     <style>
-      .strict-bon-wrap{{max-width:210mm;margin:0 auto}}
-      .strict-bon{{position:relative;width:210mm;height:297mm;margin:0 auto;background:#fff url('/static/bon_officiel.png') center/100% 100% no-repeat;box-shadow:0 0 0 1px #ddd}}
-      .bf{{position:absolute;font-family:'Times New Roman', Arial, sans-serif;font-size:10.5pt;color:#000;line-height:1.15;white-space:pre-wrap;overflow:hidden}}
-      .bf.small{{font-size:9.3pt}}
-      .bf.bold{{font-weight:700}}
-      .noPrint{{margin-top:14px;text-align:center}}
-      @media print{{.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}body{{background:#fff}}.shell{{display:block}}.content{{padding:0}}.strict-bon{{box-shadow:none;width:210mm;height:297mm;page-break-after:avoid}}}}
+      .bon-wrap {{ max-width:210mm; margin:0 auto; }}
+      .bon-page {{
+        width:210mm; min-height:297mm; margin:0 auto; background:#fff; color:#111;
+        padding:10mm 12mm; border:1px solid #111; font-family:Arial, Helvetica, sans-serif;
+        font-size:10.2pt; line-height:1.25;
+      }}
+      .bon-header {{ display:grid; grid-template-columns:1fr 1fr; gap:8mm; border-bottom:2px solid #111; padding-bottom:4mm; }}
+      .lab-name {{ font-size:13pt; font-weight:800; text-transform:uppercase; }}
+      .lab-sub {{ font-size:10pt; margin-top:1mm; }}
+      .sample-box {{ border:1.5px solid #111; padding:3mm; text-align:center; align-self:start; }}
+      .sample-box .label {{ font-size:9pt; text-transform:uppercase; font-weight:700; }}
+      .sample-box .value {{ font-size:15pt; font-weight:900; margin-top:1mm; }}
+      .bon-title {{ text-align:center; font-size:15pt; font-weight:900; text-transform:uppercase; margin:5mm 0 4mm; letter-spacing:.3px; }}
+      .info-grid {{ display:grid; grid-template-columns:1fr 1fr; border:1px solid #111; margin-bottom:4mm; }}
+      .info-cell {{ padding:2.2mm 2.5mm; border-bottom:1px solid #111; min-height:9mm; }}
+      .info-cell:nth-child(odd) {{ border-right:1px solid #111; }}
+      .info-cell.no-border-bottom {{ border-bottom:0; }}
+      .lbl {{ font-weight:800; display:inline-block; min-width:42mm; }}
+      .val {{ font-weight:500; }}
+      .section {{ border:1px solid #111; margin-top:3.2mm; page-break-inside:avoid; }}
+      .section-title {{ background:#e8eef6; border-bottom:1px solid #111; text-align:center; font-weight:900; text-transform:uppercase; padding:1.7mm; font-size:10pt; }}
+      .section-body {{ padding:2.5mm 3mm; min-height:14mm; }}
+      .macro .section-body {{ min-height:15mm; }}
+      .micro-table {{ width:100%; border-collapse:collapse; }}
+      .micro-table td {{ padding:1.6mm 1mm; vertical-align:top; }}
+      .micro-table td:first-child {{ font-weight:800; width:42mm; }}
+      .culture-grid {{ display:grid; grid-template-columns:1fr 1.25fr; gap:0; }}
+      .culture-box {{ padding:2.5mm 3mm; min-height:42mm; }}
+      .culture-box:first-child {{ border-right:1px solid #111; }}
+      .sub-title {{ font-weight:900; text-transform:uppercase; margin-bottom:2mm; text-align:center; }}
+      .abg-grid {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:2mm; }}
+      .abg-col {{ border:1px solid #555; min-height:30mm; padding:1.8mm; }}
+      .abg-title {{ font-weight:900; text-align:center; border-bottom:1px solid #777; padding-bottom:1mm; margin-bottom:1mm; }}
+      .abg-col ul {{ margin:0; padding-left:4mm; font-size:8.8pt; }}
+      .na-box {{ border:1px solid #555; padding:4mm; text-align:center; font-weight:900; margin-top:4mm; }}
+      .conclusion .section-body {{ min-height:22mm; font-weight:600; }}
+      .validation {{ display:grid; grid-template-columns:1fr 70mm; margin-top:7mm; align-items:end; }}
+      .validation-box {{ text-align:center; min-height:27mm; }}
+      .validation-title {{ font-weight:900; text-transform:uppercase; margin-bottom:9mm; }}
+      .validator-name {{ font-weight:900; }}
+      .validator-title {{ font-size:9.2pt; margin-top:1mm; }}
+      .footer-note {{ font-size:8pt; color:#333; border-top:1px solid #777; padding-top:2mm; margin-top:6mm; }}
+      .noPrint {{ text-align:center; margin-top:14px; }}
+      @media print {{
+        body {{ background:#fff; }} .side,.top,.noPrint,.card:not(.printCard) {{ display:none!important; }}
+        .shell {{ display:block; }} .content {{ padding:0; }} .bon-page {{ border:0; width:210mm; min-height:297mm; padding:10mm 12mm; }}
+      }}
+      @media(max-width:900px) {{ .bon-page {{ width:100%; min-height:auto; padding:7mm; }} .info-grid,.bon-header,.culture-grid,.validation {{ grid-template-columns:1fr; }} .info-cell:nth-child(odd),.culture-box:first-child {{ border-right:0; }} .info-cell.no-border-bottom {{ border-bottom:1px solid #111; }} }}
     </style>
     <div class='card printCard'>
-      <div class='strict-bon-wrap'>
-        <div class='strict-bon'>
-          <div class='bf bold' style='left:73.5%;top:8.2%;width:23%;height:2.1%'>{esc(r.get('sample_number'))}</div>
-          <div class='bf bold' style='left:14.2%;top:13.55%;width:35%;height:2.0%'>{esc(nom_prenom)}</div>
-          
-          <div class='bf' style='left:14.2%;top:15.82%;width:34%;height:2.0%'>{esc(age_sexe)}</div>
-          <div class='bf' style='left:66.0%;top:15.82%;width:28%;height:2.0%'>{esc(r.get('prescriber_name'))}</div>
-          <div class='bf' style='left:18.8%;top:18.05%;width:30%;height:2.0%'>{esc(date_prelevement)}</div>
-          <div class='bf' style='left:66.0%;top:18.05%;width:28%;height:2.0%'>{esc(date_reception)}</div>
-          <div class='bf bold' style='left:21.0%;top:20.55%;width:28%;height:2.2%'>Urine</div>
-          <div class='bf' style='left:66.0%;top:20.55%;width:28%;height:2.2%'>{esc(r.get('service_prescripteur'))}</div>
-          <div class='bf bold' style='left:22.0%;top:28.05%;width:70%;height:4.4%'>{esc(l.get('aspect'))}</div>
-          <div class='bf' style='left:22.0%;top:35.35%;width:16%;height:1.5%'>{esc(l.get('leucocytes'))}</div>
-          <div class='bf' style='left:22.0%;top:37.10%;width:16%;height:1.5%'>{esc(l.get('hematies'))}</div>
-          <div class='bf' style='left:22.0%;top:39.35%;width:25%;height:1.5%'>{esc(l.get('cellules_epitheliales'))}</div>
-          <div class='bf' style='left:22.0%;top:42.05%;width:25%;height:1.8%'>{esc(l.get('autres_micro'))}</div>
-          <div class='bf bold' style='left:22.0%;top:47.90%;width:70%;height:3.5%'>{esc(l.get('gram_result'))}</div>
-          <div class='bf small' style='left:5.8%;top:56.30%;width:43.8%;height:12.4%'>{esc(culture_text)}</div>
-          <div class='bf small' style='left:52.0%;top:56.30%;width:42.5%;height:12.4%'>{esc(antibio_text)}</div>
-          <div class='bf' style='left:6.0%;top:73.65%;width:88.0%;height:8.0%'>{esc(l.get('conclusion'))}</div>
-          {f"<div class='bf bold' style='left:72.0%;top:88.35%;width:24.0%;height:2.0%;text-align:center'>{esc(validateur)}</div>" if validateur else ""}
-          {f"<div class='bf small' style='left:72.0%;top:90.2%;width:24.0%;height:2.0%;text-align:center'>{esc(titre_validateur)}</div>" if titre_validateur else ""}
+      <div class='bon-wrap'>
+        <div class='bon-page'>
+          <div class='bon-header'>
+            <div>
+              <div class='lab-name'>Laboratoire de Biologie Médicale</div>
+              <div class='lab-sub'>Hôpital St Jean de Dieu de Boko</div>
+            </div>
+            <div class='sample-box'>
+              <div class='label'>N° d’échantillon</div>
+              <div class='value'>{text_or_dash(sample_number)}</div>
+            </div>
+          </div>
+
+          <div class='bon-title'>Résultats d’examens biologiques</div>
+
+          <div class='info-grid'>
+            <div class='info-cell'><span class='lbl'>Nom et prénom :</span> <span class='val'>{text_or_dash(nom_prenom)}</span></div>
+            <div class='info-cell'><span class='lbl'>Sexe / Âge :</span> <span class='val'>{text_or_dash(age_sexe)}</span></div>
+            <div class='info-cell'><span class='lbl'>Médecin prescripteur :</span> <span class='val'>{text_or_dash(r.get('prescriber_name'))}</span></div>
+            <div class='info-cell'><span class='lbl'>Service de provenance :</span> <span class='val'>{text_or_dash(r.get('service_prescripteur'))}</span></div>
+            <div class='info-cell no-border-bottom'><span class='lbl'>Date du prélèvement :</span> <span class='val'>{text_or_dash(date_prelevement)}</span></div>
+            <div class='info-cell no-border-bottom'><span class='lbl'>Date de réception :</span> <span class='val'>{text_or_dash(date_reception)}</span></div>
+          </div>
+
+          <div class='info-grid'>
+            <div class='info-cell no-border-bottom'><span class='lbl'>Nature du prélèvement :</span> <span class='val'>Urine</span></div>
+            <div class='info-cell no-border-bottom'><span class='lbl'>Culture :</span> <span class='val'>{text_or_dash(culture)}</span></div>
+          </div>
+
+          <div class='section macro'>
+            <div class='section-title'>Examen macroscopique</div>
+            <div class='section-body'><b>Aspect :</b> {text_or_dash(l.get('aspect'))}</div>
+          </div>
+
+          <div class='section'>
+            <div class='section-title'>Examen microscopique</div>
+            <div class='section-body'>
+              <table class='micro-table'>
+                <tr><td>Leucocytes :</td><td>{text_or_dash(l.get('leucocytes'))} GB/ml</td></tr>
+                <tr><td>Hématies :</td><td>{text_or_dash(l.get('hematies'))} GR/ml</td></tr>
+                <tr><td>Cellules épithéliales :</td><td>{text_or_dash(l.get('cellules_epitheliales'))}</td></tr>
+                <tr><td>Autres :</td><td>{text_or_dash(l.get('autres_micro'))}</td></tr>
+              </table>
+            </div>
+          </div>
+
+          <div class='section'>
+            <div class='section-title'>Coloration de Gram</div>
+            <div class='section-body'><b>Résultat :</b><br>{text_or_dash(l.get('gram_result'))}</div>
+          </div>
+
+          <div class='section'>
+            <div class='section-title'>Résultats de culture et de l’antibiogramme</div>
+            <div class='culture-grid'>
+              <div class='culture-box'>
+                <div class='sub-title'>Culture</div>
+                <div>{text_or_dash(l.get('culture_details'))}</div>
+              </div>
+              <div class='culture-box'>
+                <div class='sub-title'>Antibiogramme (EUCAST)</div>
+                {antibiogramme_html()}
+              </div>
+            </div>
+          </div>
+
+          <div class='section conclusion'>
+            <div class='section-title'>Conclusion</div>
+            <div class='section-body'>{text_or_dash(l.get('conclusion'))}</div>
+          </div>
+
+          <div class='validation'>
+            <div class='footer-note'>Document généré électroniquement après validation du laboratoire.</div>
+            <div class='validation-box'>
+              <div class='validation-title'>Validation</div>
+              <div class='validator-name'>{text_or_dash(validateur)}</div>
+              <div class='validator-title'>{text_or_dash(titre_validateur)}</div>
+            </div>
+          </div>
         </div>
       </div>
       <div class='noPrint'><button class='btn' onclick='print()'>Imprimer / PDF</button></div>
