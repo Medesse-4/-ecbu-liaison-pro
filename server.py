@@ -3,7 +3,7 @@
 """ECBU Liaison Pro - serveur cloud stable avec PostgreSQL obligatoire.
 Démarrage Render: python server.py --host 0.0.0.0 --port $PORT
 """
-import os, json, csv, io, hmac, base64, secrets, hashlib, datetime as dt, argparse
+import os, json, csv, io, hmac, base64, secrets, hashlib, datetime as dt, argparse, html
 from functools import wraps
 from flask import Flask, request, redirect, session, Response, abort
 
@@ -419,18 +419,96 @@ def report():
         return page("Accès interdit", "<div class='card'>Données médicales non accessibles à l’administrateur.</div>", u, 403)
     if u["role"] == "prescripteur" and r["created_by"] != u["id"]:
         return page("Accès interdit", "<div class='card'>Ce résultat appartient à un autre prescripteur.</div>", u, 403)
+
+    def esc(v):
+        return html.escape(str(v or ""), quote=True)
+
     culture = l.get("culture_status", "")
+    culture_text = (culture + ("\n" + (l.get("culture_details") or "") if l.get("culture_details") else "")).strip()
+
     if culture == "Positive":
         groups = {"S": [], "I": [], "R": []}
-        for a in json.loads(l.get("antibiogram_json") or "[]"):
+        try:
+            antibiogram_data = json.loads(l.get("antibiogram_json") or "[]")
+        except Exception:
+            antibiogram_data = []
+        for a in antibiogram_data:
             if a.get("show") and a.get("interp") in groups:
-                groups[a["interp"]].append(a["name"] + (f" ({a.get('diam')} mm)" if a.get("diam") else ""))
-        atb = f"<div class='abg'><div><b>Sensibles</b><br>{'<br>'.join(groups['S']) or '—'}</div><div><b>Intermédiaires</b><br>{'<br>'.join(groups['I']) or '—'}</div><div><b>Résistants</b><br>{'<br>'.join(groups['R']) or '—'}</div></div>"
+                label = str(a.get("name", ""))
+                if a.get("diam"):
+                    label += f" ({a.get('diam')} mm)"
+                groups[a["interp"]].append(label)
+        atb_lines = []
+        if groups["S"]:
+            atb_lines.append("SENSIBLES")
+            atb_lines.extend(groups["S"])
+        if groups["I"]:
+            atb_lines.append("INTERMÉDIAIRES")
+            atb_lines.extend(groups["I"])
+        if groups["R"]:
+            atb_lines.append("RÉSISTANTS")
+            atb_lines.extend(groups["R"])
+        atb_text = "\n".join(atb_lines) if atb_lines else "Antibiogramme non affiché"
     else:
-        atb = "<b>Antibiogramme : Non applicable</b>"
-    validateur = l.get("validator_name") or l.get("chief_validator_name") or ""
-    titre = l.get("validator_title") or ""
-    content = f"""<div class='card printCard'><div class='reportPage'><div class='center'><b>LABORATOIRE DE BIOLOGIE MÉDICALE</b><br>Hôpital St Jean de Dieu de Boko</div><h1>RÉSULTATS D’EXAMENS BIOLOGIQUES</h1><div class='row'><div>Date du prélèvement : {r.get('date_prelevement','')} {r.get('heure_prelevement','')}</div><div>N° d’échantillon : <b>{r.get('sample_number','')}</b></div><div>Date de réception : {l.get('reception_date','')} {l.get('reception_time','')}</div><div>N° labo : {r.get('auto_number','')}</div></div><div class='row'><div>Nom et prénom : <b>{r.get('patient_name','')} {r.get('patient_firstname','')}</b></div><div>Sexe / Âge : {r.get('sex','')} / {r.get('age','')} {r.get('age_unit','')}</div><div>Médecin prescripteur : {r.get('prescriber_name','')}</div><div>Service de provenance : {r.get('service_prescripteur','')}</div><div>Nature du prélèvement : {r.get('sample_type','')}</div><div>Culture</div></div><div class='box'><div class='boxTitle'>EXAMEN MACROSCOPIQUE</div>Aspect : {l.get('aspect','')}</div><div class='box'><div class='boxTitle'>EXAMEN MICROSCOPIQUE</div>Leucocytes : {l.get('leucocytes','')} GB/ml<br>Hématies : {l.get('hematies','')} GR/ml<br>Cellules épithéliales : {l.get('cellules_epitheliales','')}<br>Autres : {l.get('autres_micro','')}</div><div class='box'><div class='boxTitle'>COLORATION DE GRAM</div>Résultat : {l.get('gram_result','')}</div><div class='box'><div class='boxTitle'>RÉSULTATS DE CULTURE ET DE L’ANTIBIOGRAMME</div>Culture : {culture}<br>{l.get('culture_details','')}<br><br><b>Antibiogramme (EUCAST)</b><br>{atb}</div><div class='box'><div class='boxTitle'>CONCLUSION</div>{l.get('conclusion','')}</div><div class='sign'><b>VALIDATION</b><br><br>{validateur}<br>{titre}</div></div><div class='noPrint center' style='margin-top:14px'><button class='btn' onclick='print()'>Imprimer / PDF</button></div></div>"""
+        atb_text = "Antibiogramme : Non applicable"
+
+    def field(cls, text):
+        return f"<div class='strict-field {cls}'>{esc(text)}</div>"
+
+    fields_html = "".join([
+        field("f-sample", r.get("sample_number", "")),
+        field("f-name", f"{r.get('patient_name','')} {r.get('patient_firstname','')}"),
+        field("f-labo", r.get("auto_number", "")),
+        field("f-sexage", f"{r.get('sex','')} / {r.get('age','')} {r.get('age_unit','')}"),
+        field("f-prescriber", r.get("prescriber_name", "")),
+        field("f-date-prel", f"{r.get('date_prelevement','')} {r.get('heure_prelevement','')}"),
+        field("f-date-rec", f"{l.get('reception_date','')} {l.get('reception_time','')}"),
+        field("f-nature", r.get("sample_type", "")),
+        field("f-service", r.get("service_prescripteur", "")),
+        field("f-aspect", l.get("aspect", "")),
+        field("f-leuco", l.get("leucocytes", "")),
+        field("f-hema", l.get("hematies", "")),
+        field("f-cell", l.get("cellules_epitheliales", "")),
+        field("f-autres", l.get("autres_micro", "")),
+        field("f-gram", l.get("gram_result", "")),
+        field("f-culture", culture_text),
+        field("f-atb", atb_text),
+        field("f-conclusion", l.get("conclusion", "")),
+    ])
+
+    content = f"""
+    <div class='card printCard strict-wrapper'>
+      <style>
+        .strict-wrapper{{background:#fff;overflow:auto}}
+        .strict-bon{{position:relative;width:210mm;height:297mm;margin:0 auto;background:#fff url('/static/bon_officiel.png') center top/210mm 297mm no-repeat;box-shadow:0 0 0 1px #ddd}}
+        .strict-field{{position:absolute;font-family:Arial, sans-serif;font-size:10.2pt;line-height:1.15;color:#000;white-space:pre-wrap;overflow:hidden;word-break:break-word}}
+        .f-sample{{left:88.8%;top:8.7%;width:10.2%;height:2.0%;font-weight:bold;text-align:center}}
+        .f-name{{left:22.6%;top:13.95%;width:25.8%;height:1.9%;font-weight:bold}}
+        .f-labo{{left:59.8%;top:13.95%;width:32.0%;height:1.9%;font-weight:bold}}
+        .f-sexage{{left:22.6%;top:15.95%;width:25.8%;height:1.9%}}
+        .f-prescriber{{left:66.0%;top:15.95%;width:26.0%;height:1.9%}}
+        .f-date-prel{{left:22.6%;top:18.0%;width:25.8%;height:1.9%}}
+        .f-date-rec{{left:66.0%;top:18.0%;width:26.0%;height:1.9%}}
+        .f-nature{{left:22.6%;top:20.95%;width:25.8%;height:1.9%}}
+        .f-service{{left:66.0%;top:20.95%;width:26.0%;height:1.9%}}
+        .f-aspect{{left:22.8%;top:29.3%;width:69.3%;height:3.0%;font-weight:bold}}
+        .f-leuco{{left:23.0%;top:37.15%;width:14.5%;height:1.45%}}
+        .f-hema{{left:23.0%;top:38.75%;width:14.5%;height:1.45%}}
+        .f-cell{{left:23.0%;top:41.25%;width:14.5%;height:1.45%}}
+        .f-autres{{left:23.0%;top:43.8%;width:14.5%;height:1.45%}}
+        .f-gram{{left:22.8%;top:51.1%;width:69.3%;height:3.8%;font-weight:bold}}
+        .f-culture{{left:5.5%;top:58.1%;width:42.0%;height:12.0%;font-size:9.4pt}}
+        .f-atb{{left:52.0%;top:58.1%;width:41.0%;height:12.0%;font-size:8.6pt}}
+        .f-conclusion{{left:5.5%;top:74.5%;width:87.0%;height:7.0%;font-size:10pt;font-weight:bold}}
+        @media(max-width:900px){{.strict-bon{{width:100%;height:auto;aspect-ratio:210/297;background-size:100% 100%}}.strict-field{{font-size:2.1vw}}.f-atb{{font-size:1.7vw}}.f-culture{{font-size:1.8vw}}}}
+        @media print{{@page{{size:A4 portrait;margin:0}}body{{background:#fff!important}}.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block!important}}.content{{padding:0!important;margin:0!important;max-width:none!important}}.printCard{{display:block!important;border:0!important;box-shadow:none!important;padding:0!important;margin:0!important}}.strict-bon{{width:210mm!important;height:297mm!important;margin:0!important;box-shadow:none!important;background-size:210mm 297mm!important}}}}
+      </style>
+      <div class='strict-bon'>{fields_html}</div>
+      <div class='noPrint center' style='margin-top:14px'>
+        <button class='btn' onclick='print()'>Imprimer / PDF</button>
+      </div>
+    </div>
+    """
     return page("Bon de résultat", content, u)
 
 @app.route("/admin/export")
