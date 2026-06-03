@@ -5,7 +5,6 @@ Démarrage Render: python server.py --host 0.0.0.0 --port $PORT
 """
 import os, json, csv, io, hmac, base64, secrets, hashlib, datetime as dt, argparse, smtplib, ssl, random
 from functools import wraps
-from email.message import EmailMessage
 from urllib.parse import urlparse
 
 from flask import Flask, request, redirect, session, Response, render_template_string, abort
@@ -227,7 +226,44 @@ def init_db():
         con.commit()
     finally:
         con.close()
+    ensure_professional_tables()
     ensure_admin()
+
+
+def ensure_professional_tables():
+    if USE_PG:
+        statements = [
+            """CREATE TABLE IF NOT EXISTS non_conformities(
+                id SERIAL PRIMARY KEY, request_id INTEGER, type_nc TEXT NOT NULL, description TEXT, severity TEXT, impact TEXT,
+                consequence TEXT, decision_taken TEXT, declared_by INTEGER, declared_by_name TEXT, declared_at TEXT NOT NULL, status TEXT DEFAULT 'Ouverte'
+            )""",
+            """CREATE TABLE IF NOT EXISTS capa_actions(
+                id SERIAL PRIMARY KEY, non_conformity_id INTEGER, corrective_action TEXT, preventive_action TEXT, responsible TEXT,
+                due_date TEXT, status TEXT DEFAULT 'Ouverte', result TEXT, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS support_tickets(
+                id SERIAL PRIMARY KEY, title TEXT NOT NULL, description TEXT, category TEXT, status TEXT DEFAULT 'Ouvert',
+                created_by INTEGER, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""",
+        ]
+    else:
+        statements = [
+            """CREATE TABLE IF NOT EXISTS non_conformities(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER, type_nc TEXT NOT NULL, description TEXT, severity TEXT, impact TEXT,
+                consequence TEXT, decision_taken TEXT, declared_by INTEGER, declared_by_name TEXT, declared_at TEXT NOT NULL, status TEXT DEFAULT 'Ouverte'
+            )""",
+            """CREATE TABLE IF NOT EXISTS capa_actions(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, non_conformity_id INTEGER, corrective_action TEXT, preventive_action TEXT, responsible TEXT,
+                due_date TEXT, status TEXT DEFAULT 'Ouverte', result TEXT, created_by INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""",
+            """CREATE TABLE IF NOT EXISTS support_tickets(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, description TEXT, category TEXT, status TEXT DEFAULT 'Ouvert',
+                created_by INTEGER, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""",
+        ]
+    for s in statements:
+        execute(s)
+    ensure_column("audit", "ip_address", "TEXT")
 
 def ensure_column(table, col, ddl):
     try:
@@ -249,7 +285,11 @@ def ensure_admin():
 
 def audit(action):
     u = current_user()
-    execute("INSERT INTO audit(user_id,user_name,action,created_at) VALUES(?,?,?,?)", (u.get('id') if u else None, u.get('name') if u else '', action, now()))
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "") if request else ""
+    try:
+        execute("INSERT INTO audit(user_id,user_name,action,created_at,ip_address) VALUES(?,?,?,?,?)", (u.get('id') if u else None, u.get('name') if u else '', action, now(), ip))
+    except Exception:
+        execute("INSERT INTO audit(user_id,user_name,action,created_at) VALUES(?,?,?,?)", (u.get('id') if u else None, u.get('name') if u else '', action, now()))
 
 def current_user():
     uid = session.get("uid")
@@ -282,20 +322,20 @@ def page(title, content, user=None, status=200):
     if user:
         items = []
         if user["role"] == "admin":
-            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/audit", "Journal")]
+            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/admin/reset", "Réinitialisation"), ("/support", "Support"), ("/audit", "Journal")]
         elif user["role"] == "prescripteur":
-            items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives")]
+            items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives"), ("/support", "Support")]
         elif user["role"] == "laboratoire":
-            items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/quality/dashboard", "Tableau qualité"), ("/microbiology/resistance", "Antibiorésistance")]
+            items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/support", "Support")]
         elif user["role"] == "chef_labo":
-            items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance")]
+            items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/support", "Support")]
         menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/logout'>Déconnexion</a>"
     html = f"""<!doctype html><html lang='fr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title} - {APP_NAME}</title>
 <style>
 :root{{--blue:#075985;--blue2:#0284c7;--accent:#14b8a6;--bg:#eef7fb;--line:#dbe7f0;--ink:#0f172a;--mut:#64748b;--card:#ffffff;--shadow:0 18px 50px rgba(15,23,42,.10)}}
 *{{box-sizing:border-box}}body{{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:radial-gradient(circle at top left,#e0f2fe,#f8fafc 42%,#eef2ff);color:var(--ink)}}
 a{{color:inherit}}.shell{{display:grid;grid-template-columns:292px 1fr;min-height:100vh}}.side{{background:linear-gradient(180deg,#062b49,#073b62);color:#fff;padding:22px;position:sticky;top:0;height:100vh;box-shadow:12px 0 30px rgba(2,8,23,.15);overflow:auto}}.logo{{width:50px;height:50px;border-radius:17px;background:linear-gradient(135deg,#38bdf8,#14b8a6);display:grid;place-items:center;font-weight:1000;box-shadow:0 10px 25px rgba(20,184,166,.35)}}.brand{{display:flex;gap:12px;align-items:center;margin-bottom:24px}}.brand h1{{font-size:20px;margin:0;letter-spacing:.2px}}.brand p{{font-size:12px;color:#bfdbfe;margin:3px 0 0}}.nav{{display:flex;align-items:center;gap:10px;text-decoration:none;padding:12px 14px;border-radius:16px;margin:7px 0;color:#e0f2fe;font-weight:800;border:1px solid transparent}}.nav:hover{{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.16)}}.danger{{color:#fecaca}}.top{{background:rgba(255,255,255,.88);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);padding:15px 24px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:4}}.top b{{font-size:18px}}.content{{padding:26px;max-width:1500px}}.card{{background:rgba(255,255,255,.96);border:1px solid #e2e8f0;border-radius:24px;box-shadow:var(--shadow);padding:22px;margin-bottom:20px}}.card h2,.card h3{{margin-top:0}}.grid{{display:grid;gap:14px}}.g2{{grid-template-columns:repeat(2,1fr)}}.g3{{grid-template-columns:repeat(3,1fr)}}.g4{{grid-template-columns:repeat(4,1fr)}}label{{font-size:13px;color:#475569;font-weight:800}}input,select,textarea{{width:100%;padding:12px 13px;border:1px solid #cbd5e1;border-radius:14px;background:#fbfdff;margin-top:6px;font-size:14px;outline:none}}input:focus,select:focus,textarea:focus{{border-color:#0284c7;box-shadow:0 0 0 4px rgba(2,132,199,.12)}}textarea{{min-height:86px}}.btn{{border:0;border-radius:14px;background:linear-gradient(135deg,#075985,#0284c7);color:white;padding:12px 16px;font-weight:900;cursor:pointer;text-decoration:none;display:inline-block;box-shadow:0 10px 22px rgba(2,132,199,.22)}}.btn:hover{{filter:brightness(1.04)}}.btn.sec{{background:#e2e8f0;color:#0f172a;box-shadow:none}}.btn.ok{{background:linear-gradient(135deg,#15803d,#16a34a)}}.btn.bad{{background:linear-gradient(135deg,#b91c1c,#ef4444)}}.msg{{padding:13px 15px;border-left:5px solid #0284c7;background:#eff6ff;border-radius:16px;color:#1e3a8a;margin:12px 0}}.table{{width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:16px}}.table th,.table td{{padding:12px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}.table th{{background:#f1f5f9;color:#475569;font-size:12px;text-transform:uppercase;letter-spacing:.35px}}.table tr:hover td{{background:#f8fafc}}.pill{{display:inline-block;border-radius:999px;padding:6px 11px;font-size:12px;font-weight:1000}}.pill.ok{{background:#dcfce7;color:#166534}}.pill.bad{{background:#fee2e2;color:#991b1b}}.pill.wait{{background:#fef3c7;color:#92400e}}.login{{max-width:590px;margin:7vh auto}}.auth-card{{border-top:6px solid #0284c7}}.small{{color:#64748b;font-size:12px}}.menu-toggle{{display:none;border:0;background:#e2e8f0;border-radius:12px;padding:10px 12px;font-weight:900}}.reportPage{{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#000;padding:10mm;border:1px solid #111;font-family:Arial,sans-serif;font-size:11.2pt;line-height:1.25}}.reportPage h1{{font-size:16pt;text-align:center;margin:2mm 0;text-transform:uppercase}}.center{{text-align:center}}.row{{display:grid;grid-template-columns:1fr 1fr;gap:2mm 12mm;margin:2mm 0}}.box{{border:1px solid #111;padding:2.5mm;margin-top:3mm;min-height:16mm}}.boxTitle{{font-weight:900;text-align:center;border-bottom:1px solid #111;margin:-2.5mm -2.5mm 2mm -2.5mm;padding:1.5mm;text-transform:uppercase}}.abg{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:2mm}}.abg>div{{border:1px solid #333;min-height:26mm;padding:2mm}}.sign{{margin-top:8mm;text-align:right}}@media(max-width:900px){{.shell{{grid-template-columns:1fr}}.side{{height:auto;position:relative;display:none}}.side.open{{display:block}}.menu-toggle{{display:inline-block}}.g2,.g3,.g4{{grid-template-columns:1fr}}.content{{padding:14px}}.top{{padding:12px}}.reportPage{{width:100%;min-height:auto;padding:6mm;font-size:10pt}}}}@media print{{body{{background:#fff}}.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block}}.content{{padding:0}}.reportPage{{border:0;margin:0;width:210mm;height:297mm;overflow:hidden}}}}
-</style></style></head><body>"""
+</style></head><body>"""
     if user:
         html += f"<div class='shell'><aside class='side' id='sideNav'><div class='brand'><div class='logo'>EC</div><div><h1>{APP_NAME}</h1><p>Plateforme ECBU</p></div></div>{menu}</aside><main><div class='top'><div><button class='menu-toggle' onclick=\"document.getElementById('sideNav').classList.toggle('open')\">☰ Menu</button> <b>{title}</b></div><span class='small'>{user['name']} — {user['role']}</span></div><div class='content'>{content}</div></main></div>"
     else:
@@ -323,10 +363,12 @@ def login():
         session["uid"] = u["id"]
         audit("Connexion")
         return redirect("/")
-    return page("Connexion", """<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Connexion</h1><form method='post' class='grid'><label>Email<input name='email' type='email' required></label><label>Mot de passe<input name='password' type='password' required></label><button class='btn'>Connexion</button></form><p class='center'><a href='/register/request-code'>Créer un compte utilisateur</a></p></div>""")
+    return page("Connexion", """<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Connexion</h1><form method='post' class='grid'><label>Email<input name='email' type='email' required></label><label>Mot de passe<input name='password' type='password' required></label><button class='btn'>Connexion</button></form><p class='center'><a href='/register'>Créer un compte utilisateur</a></p></div>""")
 
-@app.route("/register/request-code", methods=["POST"])
+@app.route("/register/request-code", methods=["GET", "POST"])
 def request_email_code():
+    if request.method == "GET":
+        return page("Vérification email", """<div class='login card auth-card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Vérification de l'adresse email</h1><form method='post' class='grid'><label>Adresse email professionnelle<input name='email' type='email' required></label><button class='btn ok'>Recevoir le code de vérification</button></form><p class='small center'>Le code est valable pendant 1 heure. Après vérification, le compte reste soumis à validation administrateur.</p></div>""")
     email = formv("email").lower()
     if not email or "@" not in email:
         return page("Vérification email", "<div class='login card'><h1>Email invalide</h1><a class='btn' href='/register'>Retour</a></div>", None, 400)
@@ -342,20 +384,6 @@ def request_email_code():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
-
-        # === CHECK EMAIL CODE BEFORE ACCOUNT CREATION ===
-        pending_email = formv('email').lower()
-        email_code = formv('email_code')
-        pending = execute('SELECT * FROM users WHERE email=?', (pending_email,), fetchone=True)
-        if not pending or not pending.get('email_code_hash') or not pending.get('email_code_expires'):
-            return page('Email non vérifié', "<div class='login card'><h1>Email non vérifié</h1><p>Veuillez d'abord demander un code de vérification.</p><a class='btn' href='/register/request-code'>Recevoir le code</a></div>", None, 403)
-        try:
-            exp = dt.datetime.strptime(pending.get('email_code_expires'), '%Y-%m-%d %H:%M:%S')
-        except Exception:
-            exp = dt.datetime.min
-        if exp < dt.datetime.now() or _email_code_hash(email_code) != pending.get('email_code_hash'):
-            return page('Code incorrect', "<div class='login card'><h1>Code incorrect ou expiré</h1><a class='btn' href='/register/request-code'>Recevoir un nouveau code</a></div>", None, 403)
-
         role = formv("role")
         if role == "admin" or role not in ("prescripteur", "laboratoire", "chef_labo"):
             role = "prescripteur"
@@ -468,14 +496,21 @@ def new_request(u):
         return redirect("/requests")
     return page("Nouvelle demande", f"""<div class='card'><h2>Fiche de demande ECBU</h2><form method='post' class='grid g3'><label>Code prélèvement<input name='code_prelevement'></label><label>Date prélèvement<input type='date' name='date_prelevement' required></label><label>Heure prélèvement<input type='time' name='heure_prelevement' required></label><label>Nom patient<input name='patient_name' required></label><label>Prénoms patient<input name='patient_firstname' required></label><label>Contact<input name='patient_phone'></label><label>Âge<input name='age' required></label><label>Unité<select name='age_unit'><option>Ans</option><option>Mois</option><option>Jours</option></select></label><label>Sexe<select name='sex'><option>Masculin</option><option>Féminin</option></select></label><label>Service<input name='service_prescripteur' value='{u.get('service','')}' required></label><label>Médecin<input name='prescriber_name' value='{u['name']}' required></label><label>Statut patient<select name='patient_status'><option>Hospitalisé</option><option>Externe</option><option>Ambulatoire</option></select></label><label>Examen<select name='exam_requested'><option>ECBU</option><option>Culture urine + antibiogramme si positif</option></select></label><label>Urgent<select name='urgent'><option>Non</option><option>Oui</option></select></label><label>Antibiotiques<select name='patient_antibiotics'><option>Non</option><option>Oui</option><option>Non renseigné</option></select></label><label>Sonde urinaire<select name='patient_probe'><option>Non</option><option>Oui</option></select></label><label>Type prélèvement<select name='sample_type'><option>Jet moyen</option><option>Sonde urinaire</option><option>Poche collectrice</option><option>Autre</option></select></label><label>Délai<select name='delai_miction_depot'><option>≤ 2 h</option><option>2–4 h</option><option>> 4 h</option><option>Non renseigné</option></select></label><label>Conservation<select name='temperature_conservation'><option>Réfrigération</option><option>Ambiante</option><option>Non renseignée</option></select></label><label>Patient informé<select name='patient_informe_decl'><option>Oui</option><option>Non</option></select></label><label>Technique maîtrisée<select name='technique_maitrisee_decl'><option>Oui</option><option>Non</option></select></label><label>Toilette intime<select name='toilette_decl'><option>Oui</option><option>Non</option></select></label><label>Flacon stérile<select name='flacon_sterile_decl'><option>Oui</option><option>Non</option></select></label><label style='grid-column:1/-1'>Contexte clinique<textarea name='clinical_context'></textarea></label><label style='grid-column:1/-1'>Observations<textarea name='observations_prescripteur'></textarea></label><button class='btn ok'>Envoyer</button></form></div>""", u)
 
+
 def request_table(u, rows_, title, lab=False, chief=False):
     trs = ""
     for r in rows_:
         actions = f"<a class='btn sec' href='/report?id={r['id']}'>Bon</a> "
         if lab:
-            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a>"
-        if chief and r['status'] == "En attente validation chef":
-            actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider</button></form>"
+            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a> "
+            if r.get('status') in ('Envoyé au laboratoire','En cours laboratoire','En attente validation chef','Rejeté'):
+                actions += f"<form method='post' action='/lab/delete' style='display:inline' onsubmit=\"return confirm('Supprimer cette demande des listes du laboratoire ?');\"><input type='hidden' name='id' value='{r['id']}'><button class='btn bad'>Supprimer</button></form> "
+            if r.get('status') == 'En attente validation chef':
+                actions += f"<form method='post' action='/lab/send-direct' style='display:inline' onsubmit=\"return confirm('Envoyer directement ce résultat au prescripteur sans validation chef ?');\"><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Envoyer direct</button></form>"
+        if chief:
+            actions += f"<a class='btn sec' href='/lab/edit?id={r['id']}'>Corriger</a> "
+            if r.get('status') == "En attente validation chef":
+                actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider</button></form>"
         trs += f"<tr><td>{r['auto_number']}</td><td>{r.get('sample_number') or 'À attribuer'}</td><td>{r['service_prescripteur']}</td><td>{r['patient_name']} {r['patient_firstname']}</td><td>{pill(r['status'])}</td><td>{pill(r['conformity'])}</td><td>{actions}</td></tr>"
     return page(title, f"<div class='card'><h2>{title}</h2><table class='table'><tr><th>N° demande</th><th>N° échantillon</th><th>Service</th><th>Patient</th><th>Statut</th><th>Conformité</th><th>Action</th></tr>{trs or '<tr><td colspan=7>Aucune donnée.</td></tr>'}</table></div>", u)
 
@@ -498,30 +533,75 @@ def lab_processed(u):
     rows_ = execute("SELECT * FROM requests WHERE status IN ('En attente validation chef','Validé et envoyé','Rejeté') ORDER BY id DESC", fetch=True)
     return request_table(u, rows_, "Archives laboratoire", lab=(u["role"]=="laboratoire"), chief=(u["role"]=="chef_labo"))
 
+
 @app.route("/lab/edit", methods=["GET","POST"])
-@role_required("laboratoire")
+@role_required("laboratoire", "chef_labo")
 def lab_edit(u):
     rid = request.values.get("id", "")
     r = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
     if not r:
-        return redirect("/lab/inbox")
+        return redirect("/lab/inbox" if u["role"] == "laboratoire" else "/chief/pending")
+    lab = execute("SELECT * FROM lab_results WHERE request_id=?", (rid,), fetchone=True) or {}
     if request.method == "POST":
         quality = [k for k,_ in RULES if request.form.get(k) == "on"]
         conformity = "Conforme" if len(quality) == len(RULES) else "Non conforme"
         atbs = []
         for i,a in enumerate(ANTIBIOTICS):
             atbs.append({"name": a, "diam": formv(f"diam_{i}"), "interp": formv(f"interp_{i}"), "show": formv(f"show_{i}") == "Oui"})
-        execute("UPDATE requests SET sample_number=?, status='En attente validation chef', conformity=?, updated_at=? WHERE id=?", (formv("sample_number"), conformity, now(), rid))
+        direct = formv("direct_send") == "1"
+        status = "Validé et envoyé" if direct else "En attente validation chef"
+        execute("UPDATE requests SET sample_number=?, status=?, conformity=?, updated_at=? WHERE id=?", (formv("sample_number"), status, conformity, now(), rid))
         old = execute("SELECT request_id FROM lab_results WHERE request_id=?", (rid,), fetchone=True)
         vals = (rid, formv("reception_date"), formv("reception_time"), formv("aspect"), formv("leucocytes"), formv("hematies"), formv("cellules_epitheliales"), formv("autres_micro"), formv("gram_result"), formv("culture_status"), formv("culture_details"), json.dumps(atbs, ensure_ascii=False), formv("conclusion"), formv("validator_name"), formv("validator_title"), u["name"], json.dumps(quality, ensure_ascii=False))
         if old:
             execute("""UPDATE lab_results SET reception_date=?, reception_time=?, aspect=?, leucocytes=?, hematies=?, cellules_epitheliales=?, autres_micro=?, gram_result=?, culture_status=?, culture_details=?, antibiogram_json=?, conclusion=?, validator_name=?, validator_title=?, lab_operator_name=?, quality_json=? WHERE request_id=?""", vals[1:] + (rid,))
         else:
             execute("""INSERT INTO lab_results(request_id,reception_date,reception_time,aspect,leucocytes,hematies,cellules_epitheliales,autres_micro,gram_result,culture_status,culture_details,antibiogram_json,conclusion,validator_name,validator_title,lab_operator_name,quality_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", vals)
-        return redirect("/lab/processed")
-    checks = "".join(f"<label><input type='checkbox' name='{k}'> {v}</label>" for k,v in RULES)
-    atb_rows = "".join(f"<tr><td>{a}</td><td><input name='diam_{i}'></td><td><select name='interp_{i}'><option>ND</option><option>S</option><option>I</option><option>R</option></select></td><td><select name='show_{i}'><option>Non</option><option>Oui</option></select></td></tr>" for i,a in enumerate(ANTIBIOTICS))
-    return page("Traitement laboratoire", f"""<div class='card'><h2>Traitement — {r['auto_number']}</h2><form method='post'><input type='hidden' name='id' value='{rid}'><div class='grid g3'><label>N° d’échantillon<input name='sample_number' value='{r.get('sample_number') or ''}' required></label><label>Date réception<input type='date' name='reception_date' required></label><label>Heure réception<input type='time' name='reception_time' required></label></div><h3>Conformité</h3><div class='grid g3'>{checks}</div><h3>Résultats</h3><div class='grid g3'><label>Aspect<input name='aspect'></label><label>Leucocytes GB/ml<input name='leucocytes'></label><label>Hématies GR/ml<input name='hematies'></label><label>Cellules épithéliales<input name='cellules_epitheliales'></label><label>Autres<input name='autres_micro'></label><label>Culture<select name='culture_status'><option>Positive</option><option>Négative</option><option>Contaminée</option><option>Rejetée</option></select></label><label style='grid-column:1/-1'>Coloration de Gram<textarea name='gram_result'></textarea></label><label style='grid-column:1/-1'>Culture / germe<textarea name='culture_details'></textarea></label><label style='grid-column:1/-1'>Conclusion<textarea name='conclusion'></textarea></label><label>Validateur proposé<input name='validator_name'></label><label>Titre validateur<input name='validator_title'></label></div><h3>Antibiogramme EUCAST</h3><table class='table'><tr><th>Antibiotique</th><th>Diamètre</th><th>S/I/R</th><th>Afficher</th></tr>{atb_rows}</table><br><button class='btn ok'>Envoyer au chef laboratoire</button></form><form method='post' action='/lab/reject' style='margin-top:12px'><input type='hidden' name='id' value='{rid}'><label>Motif de rejet<textarea name='reason' required></textarea></label><button class='btn bad'>Rejeter</button></form></div>""", u)
+        if direct:
+            execute("UPDATE lab_results SET chief_validator_name=?, chief_validation_at=?, result_sent_at=? WHERE request_id=?", (u["name"] + " (envoi direct laboratoire)", now(), now(), rid))
+            audit("Envoi direct résultat au prescripteur")
+        else:
+            audit("Enregistrement/correction résultat laboratoire")
+        return redirect("/lab/processed" if u["role"] == "laboratoire" else "/chief/pending")
+    saved_quality = set()
+    try:
+        saved_quality = set(json.loads(lab.get('quality_json') or '[]'))
+    except Exception:
+        saved_quality = set()
+    checks = "".join(f"<label><input type='checkbox' name='{k}' {'checked' if k in saved_quality else ''}> {v}</label>" for k,v in RULES)
+    saved_atb = {}
+    try:
+        for a in json.loads(lab.get('antibiogram_json') or '[]'):
+            saved_atb[a.get('name')] = a
+    except Exception:
+        saved_atb = {}
+    atb_rows = ""
+    for i,a in enumerate(ANTIBIOTICS):
+        olda = saved_atb.get(a, {})
+        interp = olda.get('interp', 'ND')
+        show = 'Oui' if olda.get('show') else 'Non'
+        atb_rows += f"<tr><td>{a}</td><td><input name='diam_{i}' value='{html.escape(str(olda.get('diam','')))}'></td><td><select name='interp_{i}'><option {'selected' if interp=='ND' else ''}>ND</option><option {'selected' if interp=='S' else ''}>S</option><option {'selected' if interp=='I' else ''}>I</option><option {'selected' if interp=='R' else ''}>R</option></select></td><td><select name='show_{i}'><option {'selected' if show=='Non' else ''}>Non</option><option {'selected' if show=='Oui' else ''}>Oui</option></select></td></tr>"
+    culture_options = ''.join(f"<option {'selected' if (lab.get('culture_status') or '')==x else ''}>{x}</option>" for x in ['Positive','Négative','Contaminée','Rejetée'])
+    role_note = "Le chef laboratoire peut corriger avant validation finale." if u["role"] == "chef_labo" else "Le laboratoire peut envoyer au chef ou envoyer directement si le chef est absent."
+    return page("Traitement laboratoire", f"""<div class='card'><h2>Traitement — {r['auto_number']}</h2><div class='msg'>{role_note}</div><form method='post'><input type='hidden' name='id' value='{rid}'><div class='grid g3'><label>N° d’échantillon<input name='sample_number' value='{html.escape(str(r.get('sample_number') or ''))}' required></label><label>Date réception<input type='date' name='reception_date' value='{html.escape(str(lab.get('reception_date') or ''))}' required></label><label>Heure réception<input type='time' name='reception_time' value='{html.escape(str(lab.get('reception_time') or ''))}' required></label></div><h3>Conformité</h3><div class='grid g3'>{checks}</div><h3>Résultats</h3><div class='grid g3'><label>Aspect<input name='aspect' value='{html.escape(str(lab.get('aspect') or ''))}'></label><label>Leucocytes GB/ml<input name='leucocytes' value='{html.escape(str(lab.get('leucocytes') or ''))}'></label><label>Hématies GR/ml<input name='hematies' value='{html.escape(str(lab.get('hematies') or ''))}'></label><label>Cellules épithéliales<input name='cellules_epitheliales' value='{html.escape(str(lab.get('cellules_epitheliales') or ''))}'></label><label>Autres<input name='autres_micro' value='{html.escape(str(lab.get('autres_micro') or ''))}'></label><label>Culture<select name='culture_status'>{culture_options}</select></label><label style='grid-column:1/-1'>Coloration de Gram<textarea name='gram_result'>{html.escape(str(lab.get('gram_result') or ''))}</textarea></label><label style='grid-column:1/-1'>Culture / germe<textarea name='culture_details'>{html.escape(str(lab.get('culture_details') or ''))}</textarea></label><label style='grid-column:1/-1'>Conclusion<textarea name='conclusion'>{html.escape(str(lab.get('conclusion') or ''))}</textarea></label><label>Validateur proposé<input name='validator_name' value='{html.escape(str(lab.get('validator_name') or ''))}'></label><label>Titre validateur<input name='validator_title' value='{html.escape(str(lab.get('validator_title') or 'Biologiste médical'))}'></label></div><h3>Antibiogramme EUCAST</h3><table class='table'><tr><th>Antibiotique</th><th>Diamètre</th><th>S/I/R</th><th>Afficher</th></tr>{atb_rows}</table><br><button class='btn ok'>Enregistrer et envoyer au chef</button> <button class='btn bad' name='direct_send' value='1' onclick=\"return confirm('Confirmer l’envoi direct au prescripteur ?');\">Enregistrer et envoyer direct</button></form><form method='post' action='/lab/reject' style='margin-top:12px'><input type='hidden' name='id' value='{rid}'><label>Motif de rejet<textarea name='reason' required></textarea></label><button class='btn bad'>Rejeter</button></form></div>""", u)
+
+
+@app.route("/lab/delete", methods=["POST"])
+@role_required("laboratoire")
+def lab_delete(u):
+    rid = formv("id")
+    execute("UPDATE requests SET status='Supprimé', updated_at=? WHERE id=? AND status!='Validé et envoyé'", (now(), rid))
+    audit("Suppression logique demande par laboratoire")
+    return redirect("/lab/inbox")
+
+@app.route("/lab/send-direct", methods=["POST"])
+@role_required("laboratoire")
+def lab_send_direct(u):
+    rid = formv("id")
+    execute("UPDATE requests SET status='Validé et envoyé', updated_at=? WHERE id=? AND status='En attente validation chef'", (now(), rid))
+    execute("UPDATE lab_results SET chief_validator_name=?, chief_validation_at=?, result_sent_at=? WHERE request_id=?", (u["name"] + " (envoi direct laboratoire)", now(), now(), rid))
+    audit("Envoi direct résultat par laboratoire")
+    return redirect("/lab/processed")
 
 @app.route("/lab/reject", methods=["POST"])
 @role_required("laboratoire")
@@ -549,6 +629,7 @@ def chief_validate(u):
     execute("UPDATE lab_results SET chief_validator_name=?, chief_validation_at=?, result_sent_at=? WHERE request_id=?", (u["name"], now(), now(), rid))
     return redirect("/chief/pending")
 
+
 @app.route("/report")
 def report():
     u = current_user()
@@ -561,20 +642,60 @@ def report():
         abort(404)
     if u["role"] == "admin":
         return page("Accès interdit", "<div class='card'>Données médicales non accessibles à l’administrateur.</div>", u, 403)
-    if u["role"] == "prescripteur" and r["created_by"] != u["id"]:
-        return page("Accès interdit", "<div class='card'>Ce résultat appartient à un autre prescripteur.</div>", u, 403)
-    culture = l.get("culture_status", "")
+    if r.get("status") == "Rejeté" or l.get("culture_status") == "Rejetée":
+        return page("Bon indisponible", "<div class='card'><h2>Bon indisponible</h2><p>Ce prélèvement a été rejeté. Aucun bon ne peut être généré.</p></div>", u, 403)
+    if u["role"] == "prescripteur":
+        if r["created_by"] != u["id"]:
+            return page("Accès interdit", "<div class='card'>Ce résultat appartient à un autre prescripteur.</div>", u, 403)
+        if r.get("status") != "Validé et envoyé":
+            return page("Résultat non disponible", "<div class='card'><h2>Résultat non encore disponible</h2><p>Le résultat sera visible après validation et envoi par le laboratoire.</p></div>", u, 403)
+    def safe(v):
+        return html.escape(str(v or ""), quote=True)
+    culture = str(l.get("culture_status") or "").strip()
+    culture_details = safe(l.get("culture_details"))
+    if culture == "Positive":
+        culture_block = f"<b>Culture :</b> Positive<br><b>Germe isolé / détails :</b><br>{culture_details or '—'}"
+    elif culture == "Négative":
+        culture_block = "<b>Culture :</b> Négative<br>Absence de croissance bactérienne significative."
+    elif culture == "Contaminée":
+        culture_block = "<b>Culture :</b> Contaminée<br>Culture contaminée : interprétation non fiable."
+    else:
+        culture_block = f"<b>Culture :</b> {safe(culture) or 'Non renseignée'}<br>{culture_details}"
     if culture == "Positive":
         groups = {"S": [], "I": [], "R": []}
-        for a in json.loads(l.get("antibiogram_json") or "[]"):
+        try:
+            antibiogram_data = json.loads(l.get("antibiogram_json") or "[]")
+        except Exception:
+            antibiogram_data = []
+        for a in antibiogram_data:
             if a.get("show") and a.get("interp") in groups:
-                groups[a["interp"]].append(a["name"] + (f" ({a.get('diam')} mm)" if a.get("diam") else ""))
-        atb = f"<div class='abg'><div><b>Sensibles</b><br>{'<br>'.join(groups['S']) or '—'}</div><div><b>Intermédiaires</b><br>{'<br>'.join(groups['I']) or '—'}</div><div><b>Résistants</b><br>{'<br>'.join(groups['R']) or '—'}</div></div>"
+                label = safe(a.get("name")) + (f" ({safe(a.get('diam'))} mm)" if a.get("diam") else "")
+                groups[a.get("interp")].append(label)
+        atb = f"<div class='abg'><div><b>Sensibles</b><br>{'<br>'.join(groups['S']) or '—'}</div><div><b>Intermédiaires</b><br>{'<br>'.join(groups['I']) or '—'}</div><div><b>Résistants</b><br>{'<br>'.join(groups['R']) or '—'}</div></div><div class='small'>S = Sensible ; I = Intermédiaire ; R = Résistant</div>"
     else:
         atb = "<b>Antibiogramme : Non applicable</b>"
-    validateur = l.get("validator_name") or l.get("chief_validator_name") or ""
-    titre = l.get("validator_title") or ""
-    content = f"""<div class='card printCard'><div class='reportPage'><div class='center'><b>LABORATOIRE DE BIOLOGIE MÉDICALE</b><br>Hôpital St Jean de Dieu de Boko</div><h1>RÉSULTATS D’EXAMENS BIOLOGIQUES</h1><div class='row'><div>Date du prélèvement : {r.get('date_prelevement','')} {r.get('heure_prelevement','')}</div><div>N° d’échantillon : <b>{r.get('sample_number','')}</b></div><div>Date de réception : {l.get('reception_date','')} {l.get('reception_time','')}</div><div>N° labo : {r.get('auto_number','')}</div></div><div class='row'><div>Nom et prénom : <b>{r.get('patient_name','')} {r.get('patient_firstname','')}</b></div><div>Sexe / Âge : {r.get('sex','')} / {r.get('age','')} {r.get('age_unit','')}</div><div>Médecin prescripteur : {r.get('prescriber_name','')}</div><div>Service de provenance : {r.get('service_prescripteur','')}</div><div>Nature du prélèvement : {r.get('sample_type','')}</div><div>Culture</div></div><div class='box'><div class='boxTitle'>EXAMEN MACROSCOPIQUE</div>Aspect : {l.get('aspect','')}</div><div class='box'><div class='boxTitle'>EXAMEN MICROSCOPIQUE</div>Leucocytes : {l.get('leucocytes','')} GB/ml<br>Hématies : {l.get('hematies','')} GR/ml<br>Cellules épithéliales : {l.get('cellules_epitheliales','')}<br>Autres : {l.get('autres_micro','')}</div><div class='box'><div class='boxTitle'>COLORATION DE GRAM</div>Résultat : {l.get('gram_result','')}</div><div class='box'><div class='boxTitle'>RÉSULTATS DE CULTURE ET DE L’ANTIBIOGRAMME</div>Culture : {culture}<br>{l.get('culture_details','')}<br><br><b>Antibiogramme (EUCAST)</b><br>{atb}</div><div class='box'><div class='boxTitle'>CONCLUSION</div>{l.get('conclusion','')}</div><div class='sign'><b>VALIDATION</b><br><br>{validateur}<br>{titre}</div></div><div class='noPrint center' style='margin-top:14px'><button class='btn' onclick='print()'>Imprimer / PDF</button></div></div>"""
+    validateur = safe(l.get("validator_name") or l.get("chief_validator_name") or "")
+    titre = safe(l.get("validator_title") or "Biologiste médical")
+    validation_date = safe(l.get("chief_validation_at") or l.get("result_sent_at") or "")
+    content = f"""
+    <div class='card printCard'><div class='reportPage'>
+      <div class='center'><b>LABORATOIRE DE BIOLOGIE MÉDICALE</b><br>Hôpital Saint Jean de Dieu de Boko</div>
+      <h1>RÉSULTATS D’EXAMENS BIOLOGIQUES</h1>
+      <h1 style='font-size:13pt;color:#075985'>EXAMEN CYTOBACTÉRIOLOGIQUE DES URINES (ECBU)</h1>
+      <div class='row'>
+        <div>Nom et prénom : <b>{safe(r.get('patient_name'))} {safe(r.get('patient_firstname'))}</b></div><div>N° d’échantillon : <b>{safe(r.get('sample_number'))}</b></div>
+        <div>Sexe / Âge : {safe(r.get('sex'))} / {safe(r.get('age'))} {safe(r.get('age_unit'))}</div><div>Date du prélèvement : {safe(r.get('date_prelevement'))} {safe(r.get('heure_prelevement'))}</div>
+        <div>Médecin prescripteur : {safe(r.get('prescriber_name'))}</div><div>Service de provenance : {safe(r.get('service_prescripteur'))}</div>
+        <div>Nature du prélèvement : Urine</div><div>Statut du résultat : Validé</div>
+      </div>
+      <div class='box'><div class='boxTitle'>EXAMEN MACROSCOPIQUE</div>Aspect : {safe(l.get('aspect'))}</div>
+      <div class='box'><div class='boxTitle'>EXAMEN MICROSCOPIQUE</div>Leucocytes : {safe(l.get('leucocytes'))} GB/ml<br>Hématies : {safe(l.get('hematies'))} GR/ml<br>Cellules épithéliales : {safe(l.get('cellules_epitheliales'))}<br>Autres : {safe(l.get('autres_micro'))}</div>
+      <div class='box'><div class='boxTitle'>COLORATION DE GRAM</div>Résultat :<br>{safe(l.get('gram_result'))}</div>
+      <div class='box'><div class='boxTitle'>CULTURE</div>{culture_block}</div>
+      <div class='box'><div class='boxTitle'>ANTIBIOGRAMME (EUCAST)</div>{atb}</div>
+      <div class='box'><div class='boxTitle'>CONCLUSION</div>{safe(l.get('conclusion'))}</div>
+      <div class='sign'><b>VALIDATION</b><br>{validateur}<br>{titre}<br>{validation_date}</div>
+    </div><div class='noPrint center' style='margin-top:14px'><button class='btn' onclick='print()'>Imprimer / PDF</button></div></div>"""
     return page("Bon de résultat", content, u)
 
 @app.route("/admin/export")
@@ -592,12 +713,128 @@ def export_requests(u):
         w.writerow([r['auto_number'], r.get('sample_number',''), r['service_prescripteur'], r['status'], r['conformity'], r['created_at'], r['updated_at']])
     return Response(out.getvalue().encode('utf-8-sig'), mimetype='text/csv', headers={'Content-Disposition':'attachment; filename=base_demandes_ecbu.csv'})
 
+
+@app.route("/admin/reset", methods=["GET", "POST"])
+@role_required("admin")
+def admin_reset(u):
+    if request.method == "POST":
+        pwd = formv("password")
+        confirm = formv("confirm")
+        fresh = execute("SELECT * FROM users WHERE email=?", (ADMIN_EMAIL,), fetchone=True)
+        if confirm != "REINITIALISER" or not fresh or not verify_password(fresh["password_hash"], pwd):
+            return page("Réinitialisation refusée", "<div class='card'><h2>Confirmation incorrecte</h2><p>Mot de passe ou mot de confirmation invalide.</p><a class='btn' href='/admin/reset'>Retour</a></div>", u, 403)
+        tables = ["lab_results", "requests", "non_conformities", "capa_actions", "support_tickets", "email_verifications", "audit"]
+        if USE_PG:
+            execute("TRUNCATE TABLE " + ", ".join(tables) + " RESTART IDENTITY CASCADE")
+        else:
+            for t in tables:
+                execute(f"DELETE FROM {t}")
+            try:
+                execute("DELETE FROM sqlite_sequence WHERE name IN ('lab_results','requests','non_conformities','capa_actions','support_tickets','email_verifications','audit')")
+            except Exception:
+                pass
+        audit("Réinitialisation complète des données métier par administrateur")
+        return page("Réinitialisation terminée", "<div class='card'><h2>Données remises à zéro</h2><p>Les analyses, demandes, non-conformités, CAPA, tickets et journaux ont été remis à zéro. Les comptes utilisateurs sont conservés.</p><a class='btn' href='/admin/users'>Retour administration</a></div>", u)
+    return page("Réinitialisation", """<div class='card'><h2>Réinitialisation des données métier</h2><div class='msg'>Action réservée à l’administrateur. Les comptes utilisateurs sont conservés. Les analyses, demandes, résultats, non-conformités, CAPA, tickets et journaux sont remis à zéro.</div><form method='post' class='grid g2'><label>Mot de passe administrateur<input name='password' type='password' required></label><label>Écrire exactement REINITIALISER<input name='confirm' required></label><div><button class='btn bad'>Réinitialiser</button></div></form></div>""", u)
+
+@app.route("/support", methods=["GET", "POST"])
+def support_center():
+    u = current_user()
+    if not u:
+        return redirect("/login")
+    if request.method == "POST":
+        execute("""INSERT INTO support_tickets(title,description,category,status,created_by,created_by_name,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)""", (formv("title"), formv("description"), formv("category"), "Ouvert", u["id"], u["name"], now(), now()))
+        audit("Création ticket support")
+        return redirect("/support")
+    if u["role"] == "admin":
+        tickets = execute("SELECT * FROM support_tickets ORDER BY id DESC LIMIT 300", fetch=True)
+    else:
+        tickets = execute("SELECT * FROM support_tickets WHERE created_by=? ORDER BY id DESC LIMIT 300", (u["id"],), fetch=True)
+    trs = "".join(f"<tr><td>{t['created_at']}</td><td>{t['category']}</td><td>{t['title']}</td><td>{t['status']}</td><td>{t.get('created_by_name','')}</td></tr>" for t in tickets) or "<tr><td colspan='5'>Aucun ticket.</td></tr>"
+    content = f"""<div class='card'><h2>Signalement et assistance</h2><form method='post' class='grid g2'><label>Catégorie<select name='category'><option>Incident</option><option>Erreur</option><option>Assistance</option><option>Suggestion</option></select></label><label>Titre<input name='title' required></label><label style='grid-column:1/-1'>Description<textarea name='description' required></textarea></label><button class='btn ok'>Envoyer</button></form></div><div class='card'><h2>Tickets</h2><table class='table'><tr><th>Date</th><th>Catégorie</th><th>Titre</th><th>Statut</th><th>Demandeur</th></tr>{trs}</table></div>"""
+    return page("Support", content, u)
+
+@app.route("/quality/dashboard")
+@role_required("laboratoire", "chef_labo")
+def quality_dashboard(u):
+    total = execute("SELECT COUNT(*) AS n FROM requests WHERE status!='Supprimé'", fetchone=True)["n"]
+    conformes = execute("SELECT COUNT(*) AS n FROM requests WHERE conformity='Conforme' AND status!='Supprimé'", fetchone=True)["n"]
+    nonconf = execute("SELECT COUNT(*) AS n FROM requests WHERE conformity='Non conforme' AND status!='Supprimé'", fetchone=True)["n"]
+    rejetes = execute("SELECT COUNT(*) AS n FROM requests WHERE status='Rejeté'", fetchone=True)["n"]
+    analyses = execute("SELECT COUNT(*) AS n FROM requests WHERE status='Validé et envoyé'", fetchone=True)["n"]
+    nc_rows = execute("SELECT type_nc, COUNT(*) AS n FROM non_conformities GROUP BY type_nc ORDER BY n DESC", fetch=True)
+    taux_conf = round(conformes*100/total,1) if total else 0
+    taux_nc = round(nonconf*100/total,1) if total else 0
+    nc_table = "".join(f"<tr><td>{r['type_nc']}</td><td>{r['n']}</td></tr>" for r in nc_rows) or "<tr><td colspan='2'>Aucune non-conformité.</td></tr>"
+    content = f"""<div class='grid g4'><div class='card'><h3>Demandes</h3><h1>{total}</h1></div><div class='card'><h3>Analyses validées</h3><h1>{analyses}</h1></div><div class='card'><h3>Conformité</h3><h1>{taux_conf}%</h1></div><div class='card'><h3>Non-conformité</h3><h1>{taux_nc}%</h1></div></div><div class='card'><h2>Non-conformités par type</h2><table class='table'><tr><th>Type</th><th>Nombre</th></tr>{nc_table}</table></div><div class='card'><h2>Exports scientifiques</h2><a class='btn' href='/export/requests.csv'>Demandes CSV</a> <a class='btn sec' href='/quality/export/nonconformities.csv'>Non-conformités CSV</a></div>"""
+    return page("Tableau qualité", content, u)
+
+@app.route("/quality/nonconformities", methods=["GET", "POST"])
+@role_required("laboratoire", "chef_labo")
+def nonconformities(u):
+    if request.method == "POST":
+        execute("""INSERT INTO non_conformities(request_id,type_nc,description,severity,impact,consequence,decision_taken,declared_by,declared_by_name,declared_at,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (formv("request_id") or None, formv("type_nc"), formv("description"), formv("severity"), formv("impact"), formv("consequence"), formv("decision_taken"), u["id"], u["name"], now(), "Ouverte"))
+        audit("Déclaration non-conformité")
+        return redirect("/quality/nonconformities")
+    reqs = execute("SELECT id, auto_number, sample_number, patient_name, patient_firstname FROM requests WHERE status!='Supprimé' ORDER BY id DESC LIMIT 200", fetch=True)
+    opts = "<option value=''>Non liée</option>" + "".join(f"<option value='{r['id']}'>{r['auto_number']} - {r.get('patient_name','')} {r.get('patient_firstname','')}</option>" for r in reqs)
+    ncs = execute("SELECT * FROM non_conformities ORDER BY id DESC LIMIT 300", fetch=True)
+    trs = "".join(f"<tr><td>{r['declared_at']}</td><td>{r.get('request_id') or '—'}</td><td>{r['type_nc']}</td><td>{r.get('severity','')}</td><td>{r.get('impact','')}</td><td>{r.get('consequence','')}</td><td>{r.get('decision_taken','')}</td></tr>" for r in ncs) or "<tr><td colspan='7'>Aucune non-conformité.</td></tr>"
+    content = f"""<div class='card'><h2>Déclarer une non-conformité</h2><form method='post' class='grid g3'><label>Demande<select name='request_id'>{opts}</select></label><label>Type<select name='type_nc'><option>Échantillon non identifié</option><option>Mauvais étiquetage</option><option>Volume insuffisant</option><option>Pot non conforme</option><option>Demande incomplète</option><option>Retard d’acheminement</option><option>Mauvaise conservation</option><option>Discordance patient-échantillon</option><option>Contamination suspectée</option><option>Autre</option></select></label><label>Gravité<select name='severity'><option>Faible</option><option>Modéré</option><option>Élevé</option><option>Critique</option></select></label><label>Impact<select name='impact'><option>Faible</option><option>Modéré</option><option>Élevé</option><option>Critique</option></select></label><label>Conséquence<select name='consequence'><option>Résultat exploitable</option><option>Résultat interprétable avec prudence</option><option>Résultat douteux</option><option>Résultat non exploitable</option><option>Analyse rejetée</option></select></label><label>Décision<input name='decision_taken'></label><label style='grid-column:1/-1'>Description<textarea name='description'></textarea></label><button class='btn ok'>Enregistrer</button></form></div><div class='card'><h2>Registre</h2><table class='table'><tr><th>Date</th><th>Demande</th><th>Type</th><th>Gravité</th><th>Impact</th><th>Conséquence</th><th>Décision</th></tr>{trs}</table></div>"""
+    return page("Non-conformités", content, u)
+
+@app.route("/quality/capa", methods=["GET", "POST"])
+@role_required("laboratoire", "chef_labo")
+def capa(u):
+    if request.method == "POST":
+        execute("""INSERT INTO capa_actions(non_conformity_id,corrective_action,preventive_action,responsible,due_date,status,result,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)""", (formv("non_conformity_id") or None, formv("corrective_action"), formv("preventive_action"), formv("responsible"), formv("due_date"), formv("status"), formv("result"), u["id"], now(), now()))
+        audit("Création CAPA")
+        return redirect("/quality/capa")
+    ncs = execute("SELECT id, type_nc, declared_at FROM non_conformities ORDER BY id DESC LIMIT 200", fetch=True)
+    opts = "<option value=''>Non liée</option>" + "".join(f"<option value='{r['id']}'>#{r['id']} - {r['type_nc']}</option>" for r in ncs)
+    rows_ = execute("SELECT * FROM capa_actions ORDER BY id DESC LIMIT 300", fetch=True)
+    trs = "".join(f"<tr><td>{r['created_at']}</td><td>{r.get('non_conformity_id') or '—'}</td><td>{r.get('corrective_action','')}</td><td>{r.get('preventive_action','')}</td><td>{r.get('responsible','')}</td><td>{r.get('due_date','')}</td><td>{r.get('status','')}</td><td>{r.get('result','')}</td></tr>" for r in rows_) or "<tr><td colspan='8'>Aucune action CAPA.</td></tr>"
+    content = f"""<div class='card'><h2>Actions correctives et préventives</h2><form method='post' class='grid g3'><label>Non-conformité<select name='non_conformity_id'>{opts}</select></label><label>Responsable<input name='responsible'></label><label>Date prévue<input type='date' name='due_date'></label><label>Statut<select name='status'><option>Ouverte</option><option>En cours</option><option>Résolue</option><option>Fermée</option></select></label><label style='grid-column:1/-1'>Action corrective<textarea name='corrective_action'></textarea></label><label style='grid-column:1/-1'>Action préventive<textarea name='preventive_action'></textarea></label><label style='grid-column:1/-1'>Résultat<textarea name='result'></textarea></label><button class='btn ok'>Enregistrer</button></form></div><div class='card'><h2>Registre CAPA</h2><table class='table'><tr><th>Date</th><th>NC</th><th>Corrective</th><th>Préventive</th><th>Responsable</th><th>Échéance</th><th>Statut</th><th>Résultat</th></tr>{trs}</table></div>"""
+    return page("CAPA", content, u)
+
+@app.route("/microbiology/resistance")
+@role_required("laboratoire", "chef_labo")
+def resistance_dashboard(u):
+    rows_ = execute("""SELECT lr.culture_status, lr.culture_details, lr.antibiogram_json FROM lab_results lr JOIN requests rq ON rq.id=lr.request_id WHERE rq.status='Validé et envoyé' AND lr.antibiogram_json IS NOT NULL ORDER BY lr.request_id DESC""", fetch=True)
+    counts, germs = {}, {}
+    for r in rows_:
+        if r.get('culture_status') == 'Positive':
+            details = (r.get('culture_details') or 'Non renseigné').strip()
+            germs[details] = germs.get(details, 0) + 1
+        try:
+            data = json.loads(r.get('antibiogram_json') or '[]')
+        except Exception:
+            data = []
+        for a in data:
+            if a.get('show') and a.get('interp') in ('S','I','R'):
+                key = a.get('name') or 'Antibiotique'
+                counts.setdefault(key, {'S':0,'I':0,'R':0})[a.get('interp')] += 1
+    ab_rows = "".join(f"<tr><td>{k}</td><td>{v['S']}</td><td>{v['I']}</td><td>{v['R']}</td><td>{round(v['R']*100/max(1,(v['S']+v['I']+v['R'])),1)}%</td></tr>" for k,v in sorted(counts.items())) or "<tr><td colspan='5'>Aucune donnée.</td></tr>"
+    germ_rows = "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k,v in sorted(germs.items(), key=lambda x:x[1], reverse=True)) or "<tr><td colspan='2'>Aucun germe positif.</td></tr>"
+    return page("Antibiorésistance", f"<div class='card'><h2>Surveillance de l’antibiorésistance</h2><p class='small'>Calcul automatique à partir des antibiogrammes validés.</p></div><div class='card'><h2>Résistance par antibiotique</h2><table class='table'><tr><th>Antibiotique</th><th>S</th><th>I</th><th>R</th><th>Taux R</th></tr>{ab_rows}</table></div><div class='card'><h2>Germes isolés</h2><table class='table'><tr><th>Germe / détails culture</th><th>Nombre</th></tr>{germ_rows}</table></div>", u)
+
+@app.route("/quality/export/nonconformities.csv")
+@role_required("laboratoire", "chef_labo")
+def export_nonconformities(u):
+    data = execute("SELECT declared_at, request_id, type_nc, severity, impact, consequence, decision_taken, declared_by_name FROM non_conformities ORDER BY id DESC", fetch=True)
+    out = io.StringIO(); w = csv.writer(out, delimiter=';')
+    w.writerow(['Date','Demande','Type','Gravité','Impact','Conséquence','Décision','Déclarant'])
+    for r in data:
+        w.writerow([r['declared_at'], r.get('request_id',''), r['type_nc'], r.get('severity',''), r.get('impact',''), r.get('consequence',''), r.get('decision_taken',''), r.get('declared_by_name','')])
+    return Response(out.getvalue().encode('utf-8-sig'), mimetype='text/csv', headers={'Content-Disposition':'attachment; filename=non_conformites_ecbu.csv'})
+
 @app.route("/audit")
 @role_required("admin")
 def audit_page(u):
     data = execute("SELECT * FROM audit ORDER BY id DESC LIMIT 500", fetch=True)
-    trs = "".join(f"<tr><td>{r['created_at']}</td><td>{r.get('user_name','')}</td><td>{r['action']}</td></tr>" for r in data)
-    return page("Journal", f"<div class='card'><h2>Journal</h2><table class='table'><tr><th>Date</th><th>Utilisateur</th><th>Action</th></tr>{trs}</table></div>", u)
+    trs = "".join(f"<tr><td>{r['created_at']}</td><td>{r.get('user_name','')}</td><td>{r['action']}</td><td>{r.get('ip_address','')}</td></tr>" for r in data)
+    return page("Journal", f"<div class='card'><h2>Journal</h2><table class='table'><tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>IP</th></tr>{trs}</table></div>", u)
 
 def main():
     init_db()
@@ -609,42 +846,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-# === RESTAURATION PRO EMAIL CODE ===
-def _email_code_hash(code):
-    return hashlib.sha256((str(code) + SECRET_KEY).encode('utf-8')).hexdigest()
-
-def send_verification_code_email(to_email, code):
-    if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD and SMTP_FROM):
-        raise RuntimeError('SMTP non configuré dans Render.')
-    msg = EmailMessage()
-    msg['Subject'] = 'Code de vérification - ECBU Liaison Pro'
-    msg['From'] = SMTP_FROM
-    msg['To'] = to_email
-    msg.set_content(f'Bonjour,\n\nVotre code de vérification ECBU Liaison Pro est :\n\n{code}\n\nCe code est valable pendant 1 heure.\n\nAprès vérification, votre compte restera en attente de validation administrateur.\n')
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
-        smtp.starttls()
-        smtp.login(SMTP_USER, SMTP_PASSWORD)
-        smtp.send_message(msg)
-
-@app.route('/register/request-code', methods=['GET', 'POST'])
-def register_request_code():
-    if request.method == 'POST':
-        email = formv('email').lower()
-        if not email or '@' not in email:
-            return page('Email invalide', "<div class='login card'><h1>Email invalide</h1><a class='btn' href='/register/request-code'>Retour</a></div>", None, 400)
-        code = str(secrets.randbelow(900000) + 100000)
-        expires = (dt.datetime.now() + dt.timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
-        existing = execute('SELECT * FROM users WHERE email=?', (email,), fetchone=True)
-        if existing and existing.get('approved') and existing.get('active'):
-            return page('Compte existant', "<div class='login card'><h1>Compte déjà actif</h1><a class='btn' href='/login'>Connexion</a></div>", None, 400)
-        if existing:
-            execute('UPDATE users SET email_code_hash=?, email_code_expires=?, email_code_sent_at=? WHERE email=?', (_email_code_hash(code), expires, now(), email))
-        else:
-            execute('INSERT INTO users(name,email,password_hash,role,service,active,approved,email_verified,email_code_hash,email_code_expires,email_code_sent_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', ('Compte en préparation', email, hash_password(secrets.token_urlsafe(24)), 'prescripteur', '', 0, 0, 0, _email_code_hash(code), expires, now(), now()))
-        send_verification_code_email(email, code)
-        return page('Code envoyé', f"<div class='login card'><h1>Code envoyé</h1><p>Un code valable 1 heure a été envoyé à <b>{html.escape(email)}</b>.</p><a class='btn' href='/register'>Continuer l'inscription</a></div>")
-    return page('Vérification email', """<div class='login card'><h1>Vérification de l'adresse email</h1><form method='post' class='grid'><label>Email professionnel<input name='email' type='email' required></label><button class='btn ok'>Recevoir le code</button></form><p class='small'>Le compte restera ensuite en attente de validation par l'administrateur.</p></div>""")
-
