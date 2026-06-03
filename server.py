@@ -152,6 +152,9 @@ def init_db():
         con.close()
     ensure_column("users", "approved", "INTEGER DEFAULT 0")
     ensure_column("audit", "ip_address", "TEXT")
+    ensure_column("users", "delete_requested", "INTEGER DEFAULT 0")
+    ensure_column("users", "delete_reason", "TEXT")
+    ensure_column("users", "delete_requested_at", "TEXT")
     ensure_admin()
 
 def ensure_column(table, col, ddl):
@@ -223,14 +226,14 @@ def page(title, content, user=None, status=200):
     if user:
         items = []
         if user["role"] == "admin":
-            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/search", "Recherche"), ("/notifications", "Notifications"), ("/admin/backup", "Sauvegarde"), ("/support", "Support"), ("/audit", "Journal")]
+            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/search", "Recherche"), ("/notifications", "Notifications"), ("/admin/backup", "Sauvegarde"), ("/admin/delete-requests", "Suppressions comptes"), ("/admin/reset-data", "Réinitialisation"), ("/support", "Support"), ("/audit", "Journal")]
         elif user["role"] == "prescripteur":
             items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives"), ("/search", "Recherche"), ("/notifications", "Notifications"), ("/support", "Support")]
         elif user["role"] == "laboratoire":
             items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées"), ("/statistics", "Statistique"), ("/search", "Recherche"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/notifications", "Notifications"), ("/support", "Support")]
         elif user["role"] == "chef_labo":
             items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans"), ("/statistics", "Statistique"), ("/search", "Recherche"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/notifications", "Notifications"), ("/support", "Support")]
-        menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/logout'>Déconnexion</a>"
+        menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/account/delete-request'>Demander suppression compte</a><a class='nav danger' href='/logout'>Déconnexion</a>"
     html = f"""<!doctype html><html lang='fr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title} - {APP_NAME}</title>
 <style>
 :root{{--blue:#075985;--bg:#f4f8fb;--line:#dbe7f0;--ink:#0f172a}}*{{box-sizing:border-box}}body{{margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(135deg,#eff6ff,#f8fafc);color:var(--ink)}}.shell{{display:grid;grid-template-columns:280px 1fr;min-height:100vh}}.side{{background:#062b49;color:#fff;padding:22px}}.logo{{width:48px;height:48px;border-radius:15px;background:linear-gradient(135deg,#38bdf8,#14b8a6);display:grid;place-items:center;font-weight:900}}.brand{{display:flex;gap:12px;align-items:center;margin-bottom:22px}}.brand h1{{font-size:20px;margin:0}}.brand p{{font-size:12px;color:#bfdbfe;margin:3px 0 0}}.nav{{display:block;text-decoration:none;padding:12px 14px;border-radius:14px;margin:6px 0;color:#dbeafe;font-weight:700}}.nav:hover{{background:#0b4c78}}.danger{{color:#fecaca}}.top{{background:#fff;border-bottom:1px solid var(--line);padding:16px 24px;display:flex;justify-content:space-between}}.content{{padding:24px;max-width:1480px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:22px;box-shadow:0 14px 40px rgba(2,132,199,.08);padding:20px;margin-bottom:18px}}.grid{{display:grid;gap:13px}}.g2{{grid-template-columns:repeat(2,1fr)}}.g3{{grid-template-columns:repeat(3,1fr)}}.g4{{grid-template-columns:repeat(4,1fr)}}label{{font-size:13px;color:#475569;font-weight:700}}input,select,textarea{{width:100%;padding:11px 12px;border:1px solid #cbd5e1;border-radius:12px;background:#fbfdff;margin-top:5px;font-size:14px}}textarea{{min-height:82px}}.btn{{border:0;border-radius:12px;background:var(--blue);color:white;padding:11px 15px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}}.btn.sec{{background:#e2e8f0;color:#0f172a}}.btn.ok{{background:#15803d}}.btn.bad{{background:#b91c1c}}.msg{{padding:12px 14px;border-left:5px solid #0284c7;background:#eff6ff;border-radius:14px;color:#1e3a8a}}.table{{width:100%;border-collapse:collapse}}.table th,.table td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}.table th{{background:#f8fafc;color:#475569;font-size:12px}}.pill{{display:inline-block;border-radius:99px;padding:5px 10px;font-size:12px;font-weight:900}}.pill.ok{{background:#dcfce7;color:#166534}}.pill.bad{{background:#fee2e2;color:#991b1b}}.pill.wait{{background:#fef3c7;color:#92400e}}.login{{max-width:560px;margin:8vh auto}}.small{{color:#64748b;font-size:12px}}.reportPage{{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#000;padding:10mm;border:1px solid #111;font-family:Arial,sans-serif;font-size:11.2pt;line-height:1.25}}.reportPage h1{{font-size:16pt;text-align:center;margin:2mm 0;text-transform:uppercase}}.center{{text-align:center}}.row{{display:grid;grid-template-columns:1fr 1fr;gap:2mm 12mm;margin:2mm 0}}.box{{border:1px solid #111;padding:2.5mm;margin-top:3mm;min-height:16mm}}.boxTitle{{font-weight:900;text-align:center;border-bottom:1px solid #111;margin:-2.5mm -2.5mm 2mm -2.5mm;padding:1.5mm;text-transform:uppercase}}.abg{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:2mm}}.abg>div{{border:1px solid #333;min-height:26mm;padding:2mm}}.sign{{margin-top:8mm;text-align:right}}@media(max-width:900px){{.shell{{grid-template-columns:1fr}}.side{{height:auto}}.g2,.g3,.g4{{grid-template-columns:1fr}}.content{{padding:12px}}.reportPage{{width:100%;min-height:auto;padding:6mm;font-size:10pt}}}}@media print{{body{{background:#fff}}.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block}}.content{{padding:0}}.reportPage{{border:0;margin:0;width:210mm;height:297mm;overflow:hidden}}}}
@@ -357,7 +360,9 @@ def request_table(u, rows_, title, lab=False, chief=False):
     for r in rows_:
         actions = f"<a class='btn sec' href='/report?id={r['id']}'>Bon</a> <a class='btn sec' href='/history?id={r['id']}'>Historique</a> "
         if lab:
-            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a>"
+            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a> "
+            if r.get('status') == "Validé et envoyé":
+                actions += f"<form method='post' action='/lab/delete-result' style='display:inline' onsubmit=\"return confirm('Confirmer la suppression du résultat livré ? Le prescripteur ne pourra plus le consulter.');\"><input type='hidden' name='id' value='{r['id']}'><button class='btn bad'>Supprimer résultat</button></form> "
         if chief and r['status'] == "En attente validation chef":
             actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider</button></form> "
             actions += f"<a class='btn sec' href='/lab/edit?id={r['id']}'>Corriger</a> "
@@ -891,6 +896,188 @@ def audit_page(u):
     data = execute("SELECT * FROM audit ORDER BY id DESC LIMIT 500", fetch=True)
     trs = "".join(f"<tr><td>{r['created_at']}</td><td>{r.get('user_name','')}</td><td>{r['action']}</td><td>{r.get('ip_address','')}</td></tr>" for r in data)
     return page("Journal", f"<div class='card'><h2>Journal</h2><table class='table'><tr><th>Date</th><th>Utilisateur</th><th>Action</th><th>Adresse IP</th></tr>{trs}</table></div>", u)
+
+
+# === AJOUT STRICT : RESET ADMIN / SUPPRESSION RESULTAT / SUPPRESSION COMPTE ===
+
+@app.route("/admin/reset-data", methods=["GET", "POST"])
+@role_required("admin")
+def admin_reset_data(u):
+    if request.method == "POST":
+        password = formv("password")
+        confirmation = formv("confirmation")
+        admin = execute("SELECT * FROM users WHERE email=?", (ADMIN_EMAIL,), fetchone=True)
+
+        if not admin or not verify_password(admin.get("password_hash", ""), password):
+            return page("Réinitialisation", "<div class='card'><h2>Mot de passe administrateur incorrect</h2><a class='btn' href='/admin/reset-data'>Retour</a></div>", u, 403)
+
+        if confirmation != "REINITIALISER":
+            return page("Réinitialisation", "<div class='card'><h2>Confirmation invalide</h2><p>Saisissez exactement : <b>REINITIALISER</b></p><a class='btn' href='/admin/reset-data'>Retour</a></div>", u, 400)
+
+        tables = [
+            "lab_results",
+            "requests",
+            "non_conformities",
+            "capa_actions",
+            "support_tickets",
+            "event_history",
+            "notifications",
+            "audit",
+        ]
+
+        for table in tables:
+            try:
+                execute(f"DELETE FROM {table}")
+            except Exception:
+                pass
+
+        sequences = [
+            "requests_id_seq",
+            "non_conformities_id_seq",
+            "capa_actions_id_seq",
+            "support_tickets_id_seq",
+            "event_history_id_seq",
+            "notifications_id_seq",
+            "audit_id_seq",
+        ]
+
+        for seq in sequences:
+            try:
+                execute(f"ALTER SEQUENCE {seq} RESTART WITH 1")
+            except Exception:
+                pass
+
+        audit("Réinitialisation des données métier par administrateur")
+        return page("Réinitialisation terminée", "<div class='card'><h2>Réinitialisation terminée</h2><p>Les données métier ont été remises à zéro. Les comptes utilisateurs sont conservés.</p><a class='btn' href='/admin/users'>Retour administration</a></div>", u)
+
+    content = """
+    <div class='card'>
+      <h2>Réinitialisation complète des données métier</h2>
+      <p class='msg'><b>Action sensible :</b> cette opération efface les demandes, résultats, non-conformités, CAPA, tickets, notifications et journaux. Les comptes utilisateurs sont conservés.</p>
+      <form method='post' class='grid g2'>
+        <label>Mot de passe administrateur
+          <input name='password' type='password' required>
+        </label>
+        <label>Confirmation obligatoire
+          <input name='confirmation' placeholder='REINITIALISER' required>
+        </label>
+        <div>
+          <button class='btn bad'>Réinitialiser</button>
+        </div>
+      </form>
+    </div>
+    """
+    return page("Réinitialisation", content, u)
+
+
+@app.route("/lab/delete-result", methods=["POST"])
+@role_required("laboratoire")
+def lab_delete_result(u):
+    rid = formv("id")
+    r = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
+
+    if not r:
+        return redirect("/lab/processed")
+
+    if r.get("status") != "Validé et envoyé":
+        return page("Suppression impossible", "<div class='card'><h2>Suppression impossible</h2><p>Seul un résultat déjà livré peut être supprimé par cette fonction.</p><a class='btn' href='/lab/processed'>Retour</a></div>", u, 400)
+
+    execute("DELETE FROM lab_results WHERE request_id=?", (rid,))
+    execute("UPDATE requests SET status='En cours laboratoire', updated_at=? WHERE id=?", (now(), rid))
+    audit("Suppression d'un résultat livré par le laboratoire")
+
+    return page("Résultat supprimé", "<div class='card'><h2>Résultat supprimé</h2><p>Le résultat livré a été retiré du site. Le prescripteur ne peut plus le consulter.</p><a class='btn' href='/lab/processed'>Retour</a></div>", u)
+
+
+@app.route("/account/delete-request", methods=["GET", "POST"])
+def account_delete_request():
+    u = current_user()
+    if not u:
+        return redirect("/login")
+
+    if u.get("role") == "admin":
+        return page("Compte protégé", "<div class='card'><h2>Compte administrateur protégé</h2><p>Le compte administrateur principal ne peut pas demander sa suppression depuis cette page.</p></div>", u, 403)
+
+    if request.method == "POST":
+        reason = formv("reason")
+        execute("UPDATE users SET delete_requested=1, delete_reason=?, delete_requested_at=? WHERE id=?", (reason, now(), u["id"]))
+        audit("Demande de suppression de compte")
+        return page("Demande envoyée", "<div class='card'><h2>Demande envoyée</h2><p>Votre demande de suppression de compte a été transmise à l'administrateur.</p></div>", u)
+
+    content = """
+    <div class='card'>
+      <h2>Demande de suppression de compte</h2>
+      <p class='msg'>Votre compte ne sera pas supprimé automatiquement. Seul l'administrateur peut valider définitivement la suppression.</p>
+      <form method='post' class='grid'>
+        <label>Motif de la demande
+          <textarea name='reason' required></textarea>
+        </label>
+        <button class='btn bad'>Envoyer la demande</button>
+      </form>
+    </div>
+    """
+    return page("Demande de suppression de compte", content, u)
+
+
+@app.route("/admin/delete-requests")
+@role_required("admin")
+def admin_delete_requests(u):
+    users = execute("SELECT * FROM users WHERE delete_requested=1 ORDER BY delete_requested_at DESC", fetch=True)
+
+    trs = ""
+    for x in users:
+        actions = ""
+        if x.get("email") != ADMIN_EMAIL:
+            actions = f"""
+            <form method='post' action='/admin/delete-request-action' style='display:inline'>
+              <input type='hidden' name='id' value='{x['id']}'>
+              <button class='btn bad' name='action' value='approve'>Valider suppression</button>
+              <button class='btn sec' name='action' value='reject'>Refuser</button>
+            </form>
+            """
+
+        trs += (
+            f"<tr>"
+            f"<td>{x.get('delete_requested_at','')}</td>"
+            f"<td>{html.escape(str(x.get('name','')))}</td>"
+            f"<td>{html.escape(str(x.get('email','')))}</td>"
+            f"<td>{html.escape(str(x.get('role','')))}</td>"
+            f"<td>{html.escape(str(x.get('delete_reason','')))}</td>"
+            f"<td>{actions}</td>"
+            f"</tr>"
+        )
+
+    if not trs:
+        trs = "<tr><td colspan='6'>Aucune demande de suppression.</td></tr>"
+
+    content = (
+        "<div class='card'><h2>Demandes de suppression de compte</h2>"
+        "<table class='table'>"
+        "<tr><th>Date</th><th>Nom</th><th>Email</th><th>Rôle</th><th>Motif</th><th>Action</th></tr>"
+        + trs +
+        "</table></div>"
+    )
+    return page("Demandes de suppression", content, u)
+
+
+@app.route("/admin/delete-request-action", methods=["POST"])
+@role_required("admin")
+def admin_delete_request_action(u):
+    uid = formv("id")
+    action = formv("action")
+    target = execute("SELECT * FROM users WHERE id=?", (uid,), fetchone=True)
+
+    if not target or target.get("email") == ADMIN_EMAIL:
+        return redirect("/admin/delete-requests")
+
+    if action == "approve":
+        execute("DELETE FROM users WHERE id=?", (uid,))
+        audit("Suppression de compte validée par administrateur")
+    elif action == "reject":
+        execute("UPDATE users SET delete_requested=0, delete_reason=NULL, delete_requested_at=NULL WHERE id=?", (uid,))
+        audit("Demande de suppression de compte refusée")
+
+    return redirect("/admin/delete-requests")
 
 def main():
     print("ECBU Liaison Pro démarre avec PostgreSQL Render")
