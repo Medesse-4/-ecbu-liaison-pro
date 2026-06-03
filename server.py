@@ -5,6 +5,7 @@ Démarrage Render: python server.py --host 0.0.0.0 --port $PORT
 """
 import os, json, csv, io, hmac, base64, secrets, hashlib, datetime as dt, argparse, smtplib, ssl, random
 from functools import wraps
+from email.message import EmailMessage
 from urllib.parse import urlparse
 
 from flask import Flask, request, redirect, session, Response, render_template_string, abort
@@ -285,9 +286,9 @@ def page(title, content, user=None, status=200):
         elif user["role"] == "prescripteur":
             items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives")]
         elif user["role"] == "laboratoire":
-            items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées")]
+            items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/quality/dashboard", "Tableau qualité"), ("/microbiology/resistance", "Antibiorésistance")]
         elif user["role"] == "chef_labo":
-            items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans")]
+            items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance")]
         menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/logout'>Déconnexion</a>"
     html = f"""<!doctype html><html lang='fr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title} - {APP_NAME}</title>
 <style>
@@ -322,7 +323,7 @@ def login():
         session["uid"] = u["id"]
         audit("Connexion")
         return redirect("/")
-    return page("Connexion", """<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Connexion</h1><form method='post' class='grid'><label>Email<input name='email' type='email' required></label><label>Mot de passe<input name='password' type='password' required></label><button class='btn'>Connexion</button></form><p class='center'><a href='/register'>Créer un compte utilisateur</a></p></div>""")
+    return page("Connexion", """<div class='login card'><div class='logo' style='margin:auto'>EC</div><h1 class='center'>Connexion</h1><form method='post' class='grid'><label>Email<input name='email' type='email' required></label><label>Mot de passe<input name='password' type='password' required></label><button class='btn'>Connexion</button></form><p class='center'><a href='/register/request-code'>Créer un compte utilisateur</a></p></div>""")
 
 @app.route("/register/request-code", methods=["POST"])
 def request_email_code():
@@ -341,6 +342,20 @@ def request_email_code():
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
+
+        # === CHECK EMAIL CODE BEFORE ACCOUNT CREATION ===
+        pending_email = formv('email').lower()
+        email_code = formv('email_code')
+        pending = execute('SELECT * FROM users WHERE email=?', (pending_email,), fetchone=True)
+        if not pending or not pending.get('email_code_hash') or not pending.get('email_code_expires'):
+            return page('Email non vérifié', "<div class='login card'><h1>Email non vérifié</h1><p>Veuillez d'abord demander un code de vérification.</p><a class='btn' href='/register/request-code'>Recevoir le code</a></div>", None, 403)
+        try:
+            exp = dt.datetime.strptime(pending.get('email_code_expires'), '%Y-%m-%d %H:%M:%S')
+        except Exception:
+            exp = dt.datetime.min
+        if exp < dt.datetime.now() or _email_code_hash(email_code) != pending.get('email_code_hash'):
+            return page('Code incorrect', "<div class='login card'><h1>Code incorrect ou expiré</h1><a class='btn' href='/register/request-code'>Recevoir un nouveau code</a></div>", None, 403)
+
         role = formv("role")
         if role == "admin" or role not in ("prescripteur", "laboratoire", "chef_labo"):
             role = "prescripteur"
@@ -594,3 +609,42 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+# === RESTAURATION PRO EMAIL CODE ===
+def _email_code_hash(code):
+    return hashlib.sha256((str(code) + SECRET_KEY).encode('utf-8')).hexdigest()
+
+def send_verification_code_email(to_email, code):
+    if not (SMTP_HOST and SMTP_USER and SMTP_PASSWORD and SMTP_FROM):
+        raise RuntimeError('SMTP non configuré dans Render.')
+    msg = EmailMessage()
+    msg['Subject'] = 'Code de vérification - ECBU Liaison Pro'
+    msg['From'] = SMTP_FROM
+    msg['To'] = to_email
+    msg.set_content(f'Bonjour,\n\nVotre code de vérification ECBU Liaison Pro est :\n\n{code}\n\nCe code est valable pendant 1 heure.\n\nAprès vérification, votre compte restera en attente de validation administrateur.\n')
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+        smtp.starttls()
+        smtp.login(SMTP_USER, SMTP_PASSWORD)
+        smtp.send_message(msg)
+
+@app.route('/register/request-code', methods=['GET', 'POST'])
+def register_request_code():
+    if request.method == 'POST':
+        email = formv('email').lower()
+        if not email or '@' not in email:
+            return page('Email invalide', "<div class='login card'><h1>Email invalide</h1><a class='btn' href='/register/request-code'>Retour</a></div>", None, 400)
+        code = str(secrets.randbelow(900000) + 100000)
+        expires = (dt.datetime.now() + dt.timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
+        existing = execute('SELECT * FROM users WHERE email=?', (email,), fetchone=True)
+        if existing and existing.get('approved') and existing.get('active'):
+            return page('Compte existant', "<div class='login card'><h1>Compte déjà actif</h1><a class='btn' href='/login'>Connexion</a></div>", None, 400)
+        if existing:
+            execute('UPDATE users SET email_code_hash=?, email_code_expires=?, email_code_sent_at=? WHERE email=?', (_email_code_hash(code), expires, now(), email))
+        else:
+            execute('INSERT INTO users(name,email,password_hash,role,service,active,approved,email_verified,email_code_hash,email_code_expires,email_code_sent_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', ('Compte en préparation', email, hash_password(secrets.token_urlsafe(24)), 'prescripteur', '', 0, 0, 0, _email_code_hash(code), expires, now(), now()))
+        send_verification_code_email(email, code)
+        return page('Code envoyé', f"<div class='login card'><h1>Code envoyé</h1><p>Un code valable 1 heure a été envoyé à <b>{html.escape(email)}</b>.</p><a class='btn' href='/register'>Continuer l'inscription</a></div>")
+    return page('Vérification email', """<div class='login card'><h1>Vérification de l'adresse email</h1><form method='post' class='grid'><label>Email professionnel<input name='email' type='email' required></label><button class='btn ok'>Recevoir le code</button></form><p class='small'>Le compte restera ensuite en attente de validation par l'administrateur.</p></div>""")
+
