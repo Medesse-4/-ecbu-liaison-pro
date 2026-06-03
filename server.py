@@ -144,6 +144,9 @@ def init_db():
         con.close()
     ensure_column("users", "approved", "INTEGER DEFAULT 0")
     ensure_column("audit", "ip_address", "TEXT")
+    ensure_column("users", "delete_requested", "INTEGER DEFAULT 0")
+    ensure_column("users", "delete_reason", "TEXT")
+    ensure_column("users", "delete_requested_at", "TEXT")
     ensure_admin()
 
 def ensure_column(table, col, ddl):
@@ -199,14 +202,14 @@ def page(title, content, user=None, status=200):
     if user:
         items = []
         if user["role"] == "admin":
-            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/support", "Support"), ("/audit", "Journal")]
+            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/admin/delete-requests", "Suppressions comptes"), ("/admin/reset-data", "Réinitialisation"), ("/support", "Support"), ("/audit", "Journal")]
         elif user["role"] == "prescripteur":
             items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives"), ("/support", "Support")]
         elif user["role"] == "laboratoire":
             items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/support", "Support")]
         elif user["role"] == "chef_labo":
             items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/support", "Support")]
-        menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/logout'>Déconnexion</a>"
+        menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/account/delete-request'>Demander suppression compte</a><a class='nav danger' href='/logout'>Déconnexion</a>"
     html = f"""<!doctype html><html lang='fr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title} - {APP_NAME}</title>
 <style>
 :root{{--blue:#075985;--bg:#f4f8fb;--line:#dbe7f0;--ink:#0f172a}}*{{box-sizing:border-box}}body{{margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(135deg,#eff6ff,#f8fafc);color:var(--ink)}}.shell{{display:grid;grid-template-columns:280px 1fr;min-height:100vh}}.side{{background:#062b49;color:#fff;padding:22px}}.logo{{width:48px;height:48px;border-radius:15px;background:linear-gradient(135deg,#38bdf8,#14b8a6);display:grid;place-items:center;font-weight:900}}.brand{{display:flex;gap:12px;align-items:center;margin-bottom:22px}}.brand h1{{font-size:20px;margin:0}}.brand p{{font-size:12px;color:#bfdbfe;margin:3px 0 0}}.nav{{display:block;text-decoration:none;padding:12px 14px;border-radius:14px;margin:6px 0;color:#dbeafe;font-weight:700}}.nav:hover{{background:#0b4c78}}.danger{{color:#fecaca}}.top{{background:#fff;border-bottom:1px solid var(--line);padding:16px 24px;display:flex;justify-content:space-between}}.content{{padding:24px;max-width:1480px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:22px;box-shadow:0 14px 40px rgba(2,132,199,.08);padding:20px;margin-bottom:18px}}.grid{{display:grid;gap:13px}}.g2{{grid-template-columns:repeat(2,1fr)}}.g3{{grid-template-columns:repeat(3,1fr)}}.g4{{grid-template-columns:repeat(4,1fr)}}label{{font-size:13px;color:#475569;font-weight:700}}input,select,textarea{{width:100%;padding:11px 12px;border:1px solid #cbd5e1;border-radius:12px;background:#fbfdff;margin-top:5px;font-size:14px}}textarea{{min-height:82px}}.btn{{border:0;border-radius:12px;background:var(--blue);color:white;padding:11px 15px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}}.btn.sec{{background:#e2e8f0;color:#0f172a}}.btn.ok{{background:#15803d}}.btn.bad{{background:#b91c1c}}.msg{{padding:12px 14px;border-left:5px solid #0284c7;background:#eff6ff;border-radius:14px;color:#1e3a8a}}.table{{width:100%;border-collapse:collapse}}.table th,.table td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}.table th{{background:#f8fafc;color:#475569;font-size:12px}}.pill{{display:inline-block;border-radius:99px;padding:5px 10px;font-size:12px;font-weight:900}}.pill.ok{{background:#dcfce7;color:#166534}}.pill.bad{{background:#fee2e2;color:#991b1b}}.pill.wait{{background:#fef3c7;color:#92400e}}.login{{max-width:560px;margin:8vh auto}}.small{{color:#64748b;font-size:12px}}.reportPage{{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#000;padding:10mm;border:1px solid #111;font-family:Arial,sans-serif;font-size:11.2pt;line-height:1.25}}.reportPage h1{{font-size:16pt;text-align:center;margin:2mm 0;text-transform:uppercase}}.center{{text-align:center}}.row{{display:grid;grid-template-columns:1fr 1fr;gap:2mm 12mm;margin:2mm 0}}.box{{border:1px solid #111;padding:2.5mm;margin-top:3mm;min-height:16mm}}.boxTitle{{font-weight:900;text-align:center;border-bottom:1px solid #111;margin:-2.5mm -2.5mm 2mm -2.5mm;padding:1.5mm;text-transform:uppercase}}.abg{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:2mm}}.abg>div{{border:1px solid #333;min-height:26mm;padding:2mm}}.sign{{margin-top:8mm;text-align:right}}@media(max-width:900px){{.shell{{grid-template-columns:1fr}}.side{{height:auto}}.g2,.g3,.g4{{grid-template-columns:1fr}}.content{{padding:12px}}.reportPage{{width:100%;min-height:auto;padding:6mm;font-size:10pt}}}}@media print{{body{{background:#fff}}.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block}}.content{{padding:0}}.reportPage{{border:0;margin:0;width:210mm;height:297mm;overflow:hidden}}}}
@@ -329,7 +332,9 @@ def request_table(u, rows_, title, lab=False, chief=False):
     for r in rows_:
         actions = f"<a class='btn sec' href='/report?id={r['id']}'>Bon</a> "
         if lab:
-            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a>"
+            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a> "
+            if r.get('status') == "Validé et envoyé":
+                actions += f"<form method='post' action='/lab/delete-result' style='display:inline' onsubmit=\"return confirm('Confirmer la suppression du résultat livré ? Le prescripteur ne pourra plus le consulter.');\"><input type='hidden' name='id' value='{r['id']}'><button class='btn bad'>Supprimer résultat</button></form> "
         if chief and r['status'] == "En attente validation chef":
             actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider</button></form>"
         trs += f"<tr><td>{r['auto_number']}</td><td>{r.get('sample_number') or 'À attribuer'}</td><td>{r['service_prescripteur']}</td><td>{r['patient_name']} {r['patient_firstname']}</td><td>{pill(r['status'])}</td><td>{pill(r['conformity'])}</td><td>{actions}</td></tr>"
@@ -418,12 +423,15 @@ def report():
     if not r:
         abort(404)
 
+    # Confidentialité : l'administrateur ne consulte pas les données biologiques.
     if u["role"] == "admin":
         return page("Accès interdit", "<div class='card'>Données médicales non accessibles à l’administrateur.</div>", u, 403)
 
+    # Aucun bon pour un prélèvement rejeté.
     if r.get("status") == "Rejeté" or l.get("culture_status") == "Rejetée":
-        return page("Bon indisponible", "<div class='card'><h2>Bon indisponible</h2><p>Ce prélèvement a été rejeté. Aucun compte rendu de résultat ne peut être généré.</p></div>", u, 403)
+        return page("Bon indisponible", "<div class='card'><h2>Bon indisponible</h2><p>Ce prélèvement a été rejeté. Aucun bon de résultat ne peut être généré.</p></div>", u, 403)
 
+    # Le prescripteur ne voit le résultat qu'après validation finale et envoi.
     if u["role"] == "prescripteur":
         if r["created_by"] != u["id"]:
             return page("Accès interdit", "<div class='card'>Ce résultat appartient à un autre prescripteur.</div>", u, 403)
@@ -431,30 +439,34 @@ def report():
             return page("Résultat non disponible", "<div class='card'><h2>Résultat non encore disponible</h2><p>Le résultat sera visible après validation finale par le laboratoire.</p></div>", u, 403)
 
     def safe(v):
+        import html
         return html.escape(str(v or ""), quote=True)
-
-    def date_fr(v):
-        v = str(v or "").strip()
-        if not v:
-            return ""
-        try:
-            return dt.datetime.strptime(v[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
-        except Exception:
-            return safe(v)
 
     culture = str(l.get("culture_status") or "").strip()
     culture_details = safe(l.get("culture_details"))
-    sample_number = safe(r.get("sample_number")) or "Non attribué"
 
     if culture == "Positive":
-        culture_block = f"<div class='culture-badge positive'>Culture positive</div><div><b>Germe isolé / détails :</b><br>{culture_details or '—'}</div>"
+        culture_block = f"""
+        <div class='result-line'><b>Culture :</b> Positive</div>
+        <div class='result-line'><b>Germe isolé / détails :</b><br>{culture_details or '—'}</div>
+        """
     elif culture == "Négative":
-        culture_block = "<div class='culture-badge negative'>Culture négative</div><div>Absence de croissance bactérienne significative après incubation.</div>"
+        culture_block = """
+        <div class='result-line'><b>Culture :</b> Négative</div>
+        <div class='result-line'>Absence de croissance bactérienne significative.</div>
+        """
     elif culture == "Contaminée":
-        culture_block = "<div class='culture-badge contaminated'>Culture contaminée</div><div>Présence d'une flore polymorphe compatible avec une contamination. Interprétation non fiable.</div>"
+        culture_block = """
+        <div class='result-line'><b>Culture :</b> Contaminée</div>
+        <div class='result-line'>Culture contaminée : interprétation non fiable.</div>
+        """
     else:
-        culture_block = f"<div class='culture-badge'>Culture : {safe(culture) or 'Non renseignée'}</div><div>{culture_details or '—'}</div>"
+        culture_block = f"""
+        <div class='result-line'><b>Culture :</b> {safe(culture) or 'Non renseignée'}</div>
+        <div class='result-line'>{culture_details}</div>
+        """
 
+    # Antibiogramme : uniquement si culture positive.
     if culture == "Positive":
         groups = {"S": [], "I": [], "R": []}
         try:
@@ -468,107 +480,240 @@ def report():
                 label = nom + (f" <span class='diam'>({diam} mm)</span>" if diam else "")
                 groups[a.get("interp")].append(label)
         atb = f"""
-        <div class='sir-grid'>
-          <div class='sir-box'><div class='sir-title'>Sensible</div>{'<br>'.join(groups['S']) or '<span class="muted">—</span>'}</div>
-          <div class='sir-box'><div class='sir-title'>Intermédiaire</div>{'<br>'.join(groups['I']) or '<span class="muted">—</span>'}</div>
-          <div class='sir-box'><div class='sir-title'>Résistant</div>{'<br>'.join(groups['R']) or '<span class="muted">—</span>'}</div>
+        <div class='atb-grid'>
+            <div><h4>Sensibles</h4>{'<br>'.join(groups['S']) or '—'}</div>
+            <div><h4>Intermédiaires</h4>{'<br>'.join(groups['I']) or '—'}</div>
+            <div><h4>Résistants</h4>{'<br>'.join(groups['R']) or '—'}</div>
         </div>
-        <div class='legend'>EUCAST : S = Sensible ; I = Intermédiaire ; R = Résistant.</div>
+        <div class='legend'>S = Sensible ; I = Intermédiaire ; R = Résistant</div>
         """
     else:
-        atb = "<div class='non-applicable'>Antibiogramme : Non applicable</div>"
+        atb = "<div class='not-applicable'>Antibiogramme : Non applicable</div>"
 
     validateur = safe(l.get("validator_name") or l.get("chief_validator_name") or "")
     titre = safe(l.get("validator_title") or "Biologiste médical")
     validation_date = safe(l.get("chief_validation_at") or l.get("result_sent_at") or "")
 
+    # Nature du prélèvement : demandé = Urine, pas la technique (jet moyen, sonde, poche).
+    nature_prelevement = "Urine"
+
     content = f"""
     <div class='card printCard'>
       <style>
-        .report-pro{{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#111827;padding:12mm 13mm;border:1px solid #d1d5db;font-family:Arial,Helvetica,sans-serif;font-size:10.8pt;line-height:1.25}}
-        .rp-head{{display:grid;grid-template-columns:1fr auto;gap:10px;border-bottom:3px solid #0f766e;padding-bottom:8px;margin-bottom:9px}}
-        .rp-lab{{font-size:15pt;font-weight:900;color:#0f766e;text-transform:uppercase;letter-spacing:.2px}}
-        .rp-hospital{{font-size:10.5pt;font-weight:700;color:#334155;margin-top:2px}}
-        .rp-badge{{border:1px solid #0f766e;color:#0f766e;border-radius:8px;padding:7px 10px;text-align:center;min-width:48mm;background:#f0fdfa}}
-        .rp-badge b{{display:block;font-size:8.8pt;text-transform:uppercase;color:#0f766e;margin-bottom:3px}}
-        .rp-badge span{{font-size:12.5pt;font-weight:900;color:#111827}}
-        .rp-title{{text-align:center;margin:7px 0 8px 0}}
-        .rp-title h1{{margin:0;font-size:14.5pt;color:#111827;text-transform:uppercase;letter-spacing:.2px}}
-        .rp-title h2{{margin:3px 0 0 0;font-size:12pt;color:#0f766e;text-transform:uppercase}}
-        .rp-info{{display:grid;grid-template-columns:1fr 1fr;gap:5px 18px;border:1px solid #cbd5e1;border-radius:9px;background:#f8fafc;padding:8px 10px;margin-bottom:8px}}
-        .rp-info b{{color:#334155}}
-        .rp-section{{border:1px solid #cbd5e1;border-radius:9px;overflow:hidden;margin-top:7px;break-inside:avoid}}
-        .rp-section-title{{background:#0f766e;color:#fff;font-weight:900;text-transform:uppercase;letter-spacing:.15px;padding:5px 9px;font-size:10pt}}
-        .rp-section-body{{padding:8px 10px;background:#fff}}
-        .two-col{{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px}}
-        .culture-badge{{display:inline-block;font-weight:900;border-radius:999px;padding:5px 10px;background:#e0f2fe;color:#075985;margin-bottom:5px}}
-        .positive{{background:#dcfce7;color:#166534}}.negative{{background:#f1f5f9;color:#334155}}.contaminated{{background:#fef3c7;color:#92400e}}
-        .sir-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px}}
-        .sir-box{{min-height:31mm;border:1px solid #cbd5e1;border-radius:8px;padding:7px;background:#fbfdff}}
-        .sir-title{{text-align:center;font-weight:900;color:#0f766e;border-bottom:1px solid #ccfbf1;padding-bottom:4px;margin-bottom:5px;text-transform:uppercase;font-size:9.5pt}}
-        .legend,.muted,.diam{{color:#64748b;font-size:9pt}}
-        .legend{{margin-top:5px}}
-        .non-applicable{{text-align:center;border:1px dashed #94a3b8;border-radius:8px;background:#f8fafc;color:#475569;font-weight:900;padding:9px}}
-        .conclusion{{min-height:20mm}}
-        .rp-footer{{display:grid;grid-template-columns:1fr 1fr;align-items:end;gap:15px;margin-top:12px}}
-        .rp-note{{font-size:9pt;color:#64748b}}
-        .rp-signature{{text-align:right}}
-        .rp-sign-box{{display:inline-block;min-width:70mm;border-top:1px solid #64748b;padding-top:6px}}
-        .rp-sign-box b{{color:#0f766e;text-transform:uppercase}}
+        .report-clean{{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#0f172a;padding:13mm 14mm;border:1px solid #d1d5db;font-family:Arial,Helvetica,sans-serif;font-size:11pt;line-height:1.28}}
+        .report-header{{text-align:center;border-bottom:3px solid #075985;padding-bottom:8px;margin-bottom:10px}}
+        .report-header .lab{{font-size:15pt;font-weight:900;color:#075985;letter-spacing:.3px}}
+        .report-header .hospital{{font-size:11pt;font-weight:700;color:#334155;margin-top:2px}}
+        .report-header .title{{font-size:14pt;font-weight:900;margin-top:8px;text-transform:uppercase;color:#0f172a}}
+        .report-header .subtitle{{font-size:12pt;font-weight:900;color:#075985;margin-top:3px}}
+        .info-grid{{display:grid;grid-template-columns:1fr 1fr;gap:5px 18px;border:1px solid #cbd5e1;border-radius:8px;padding:9px;margin:10px 0;background:#f8fafc}}
+        .info-grid div{{min-height:18px}}
+        .section{{border:1px solid #cbd5e1;border-radius:8px;margin-top:9px;overflow:hidden}}
+        .section-title{{background:#075985;color:white;font-weight:900;text-transform:uppercase;padding:6px 9px;font-size:10.5pt;letter-spacing:.2px}}
+        .section-body{{padding:8px 10px;background:white}}
+        .two-col{{display:grid;grid-template-columns:1fr 1fr;gap:7px 18px}}
+        .result-line{{margin:3px 0}}
+        .atb-grid{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:7px;margin-top:4px}}
+        .atb-grid div{{border:1px solid #cbd5e1;border-radius:6px;padding:7px;min-height:42mm;background:#fbfdff}}
+        .atb-grid h4{{margin:0 0 5px 0;text-align:center;color:#075985;border-bottom:1px solid #dbeafe;padding-bottom:3px}}
+        .legend,.diam{{font-size:9pt;color:#475569}}
+        .not-applicable{{font-weight:800;color:#475569;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:6px;padding:8px;text-align:center}}
+        .conclusion{{min-height:24mm}}
+        .validation{{display:grid;grid-template-columns:1fr 1fr;margin-top:14px;gap:12px;align-items:end}}
+        .signature{{text-align:right}}
+        .signature b{{color:#075985}}
+        .stamp{{border-top:1px solid #94a3b8;display:inline-block;padding-top:6px;min-width:70mm}}
         .noPrint{{text-align:center;margin-top:14px}}
-        @media(max-width:900px){{.report-pro{{width:100%;min-height:auto;padding:7mm;font-size:10pt}}.rp-head,.rp-info,.two-col,.sir-grid,.rp-footer{{grid-template-columns:1fr}}.rp-badge{{min-width:0}}}}
-        @media print{{body{{background:#fff}}.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block}}.content{{padding:0}}.report-pro{{border:0;width:210mm;height:297mm;margin:0;padding:10mm 12mm;overflow:hidden}}}}
+        @media print{{.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block}}.content{{padding:0}}.report-clean{{border:0;width:210mm;height:297mm;margin:0;padding:11mm 12mm;overflow:hidden}}}}
       </style>
-
-      <div class='report-pro'>
-        <div class='rp-head'>
-          <div>
-            <div class='rp-lab'>Laboratoire de Biologie Médicale</div>
-            <div class='rp-hospital'>Hôpital Saint Jean de Dieu de Boko</div>
-          </div>
-          <div class='rp-badge'><b>N° Échantillon</b><span>{sample_number}</span></div>
+      <div class='report-clean'>
+        <div class='report-header'>
+          <div class='lab'>LABORATOIRE DE BIOLOGIE MÉDICALE</div>
+          <div class='hospital'>Hôpital Saint Jean de Dieu de Boko</div>
+          <div class='title'>RÉSULTATS D’EXAMENS BIOLOGIQUES</div>
+          <div class='subtitle'>EXAMEN CYTOBACTÉRIOLOGIQUE DES URINES (ECBU)</div>
         </div>
 
-        <div class='rp-title'>
-          <h1>Résultats d’examens biologiques</h1>
-          <h2>Examen cytobactériologique des urines (ECBU)</h2>
-        </div>
-
-        <div class='rp-info'>
+        <div class='info-grid'>
           <div><b>Nom et prénom :</b> {safe(r.get('patient_name'))} {safe(r.get('patient_firstname'))}</div>
+          <div><b>N° Échantillon :</b> {safe(r.get('sample_number'))}</div>
           <div><b>Sexe / Âge :</b> {safe(r.get('sex'))} / {safe(r.get('age'))} {safe(r.get('age_unit'))}</div>
+          <div><b>Date du prélèvement :</b> {safe(r.get('date_prelevement'))} {safe(r.get('heure_prelevement'))}</div>
           <div><b>Médecin prescripteur :</b> {safe(r.get('prescriber_name'))}</div>
           <div><b>Service de provenance :</b> {safe(r.get('service_prescripteur'))}</div>
-          <div><b>Date du prélèvement :</b> {date_fr(r.get('date_prelevement'))} {safe(r.get('heure_prelevement'))}</div>
-          <div><b>Nature du prélèvement :</b> Urine</div>
+          <div><b>Nature du prélèvement :</b> {nature_prelevement}</div>
+          <div><b>Statut du résultat :</b> Validé</div>
         </div>
 
-        <div class='rp-section'><div class='rp-section-title'>Examen macroscopique</div><div class='rp-section-body'><b>Aspect :</b> {safe(l.get('aspect')) or '—'}</div></div>
+        <div class='section'>
+          <div class='section-title'>Examen macroscopique</div>
+          <div class='section-body'><b>Aspect :</b> {safe(l.get('aspect'))}</div>
+        </div>
 
-        <div class='rp-section'>
-          <div class='rp-section-title'>Examen microscopique</div>
-          <div class='rp-section-body two-col'>
-            <div><b>Leucocytes :</b> {safe(l.get('leucocytes')) or '—'} GB/ml</div>
-            <div><b>Hématies :</b> {safe(l.get('hematies')) or '—'} GR/ml</div>
-            <div><b>Cellules épithéliales :</b> {safe(l.get('cellules_epitheliales')) or '—'}</div>
-            <div><b>Autres :</b> {safe(l.get('autres_micro')) or '—'}</div>
+        <div class='section'>
+          <div class='section-title'>Examen microscopique</div>
+          <div class='section-body two-col'>
+            <div><b>Leucocytes :</b> {safe(l.get('leucocytes'))} GB/ml</div>
+            <div><b>Hématies :</b> {safe(l.get('hematies'))} GR/ml</div>
+            <div><b>Cellules épithéliales :</b> {safe(l.get('cellules_epitheliales'))}</div>
+            <div><b>Autres :</b> {safe(l.get('autres_micro'))}</div>
           </div>
         </div>
 
-        <div class='rp-section'><div class='rp-section-title'>Coloration de Gram</div><div class='rp-section-body'>{safe(l.get('gram_result')) or '—'}</div></div>
-        <div class='rp-section'><div class='rp-section-title'>Culture</div><div class='rp-section-body'>{culture_block}</div></div>
-        <div class='rp-section'><div class='rp-section-title'>Antibiogramme (EUCAST)</div><div class='rp-section-body'>{atb}</div></div>
-        <div class='rp-section'><div class='rp-section-title'>Conclusion</div><div class='rp-section-body conclusion'>{safe(l.get('conclusion')) or '—'}</div></div>
+        <div class='section'>
+          <div class='section-title'>Coloration de Gram</div>
+          <div class='section-body'><b>Résultat :</b><br>{safe(l.get('gram_result'))}</div>
+        </div>
 
-        <div class='rp-footer'>
-          <div class='rp-note'>Compte rendu généré électroniquement après validation du laboratoire.</div>
-          <div class='rp-signature'><span class='rp-sign-box'><b>Validation</b><br>{validateur or '—'}<br>{titre}<br>{validation_date}</span></div>
+        <div class='section'>
+          <div class='section-title'>Culture</div>
+          <div class='section-body'>{culture_block}</div>
+        </div>
+
+        <div class='section'>
+          <div class='section-title'>Antibiogramme (EUCAST)</div>
+          <div class='section-body'>{atb}</div>
+        </div>
+
+        <div class='section'>
+          <div class='section-title'>Conclusion</div>
+          <div class='section-body conclusion'>{safe(l.get('conclusion'))}</div>
+        </div>
+
+        <div class='validation'>
+          <div class='legend'>Compte rendu généré électroniquement après validation du laboratoire.</div>
+          <div class='signature'><span class='stamp'><b>VALIDATION</b><br>{validateur}<br>{titre}<br>{validation_date}</span></div>
         </div>
       </div>
       <div class='noPrint'><button class='btn' onclick='print()'>Imprimer / Enregistrer en PDF</button></div>
     </div>
     """
     return page("Bon de résultat", content, u)
+
+
+
+# === AJOUT CIBLE : ADMIN RESET / SUPPRESSION RESULTAT / SUPPRESSION COMPTE ===
+
+@app.route("/admin/reset-data", methods=["GET", "POST"])
+@role_required("admin")
+def admin_reset_data(u):
+    if request.method == "POST":
+        password = formv("password")
+        confirm = formv("confirm")
+        admin = execute("SELECT * FROM users WHERE email=?", (ADMIN_EMAIL,), fetchone=True)
+
+        if not admin or not verify_password(admin.get("password_hash", ""), password):
+            return page("Réinitialisation", "<div class='card'><h2>Mot de passe administrateur incorrect</h2><a class='btn' href='/admin/reset-data'>Retour</a></div>", u, 403)
+
+        if confirm != "REINITIALISER":
+            return page("Réinitialisation", "<div class='card'><h2>Confirmation invalide</h2><p>Vous devez saisir exactement : <b>REINITIALISER</b></p><a class='btn' href='/admin/reset-data'>Retour</a></div>", u, 400)
+
+        tables = ["lab_results", "requests", "non_conformities", "capa_actions", "support_tickets", "audit"]
+        for table in tables:
+            try:
+                execute(f"DELETE FROM {table}")
+            except Exception:
+                pass
+
+        seqs = ["requests_id_seq", "non_conformities_id_seq", "capa_actions_id_seq", "support_tickets_id_seq", "audit_id_seq"]
+        for seq in seqs:
+            try:
+                execute(f"ALTER SEQUENCE {seq} RESTART WITH 1")
+            except Exception:
+                pass
+
+        audit("Réinitialisation complète des données métier par administrateur")
+        return page("Réinitialisation terminée", "<div class='card'><h2>Données métier réinitialisées</h2><p>Les analyses, résultats, demandes, non-conformités, CAPA, tickets et journaux ont été remis à zéro. Les comptes utilisateurs sont conservés.</p><a class='btn' href='/admin/users'>Retour administration</a></div>", u)
+
+    content = """
+    <div class='card'>
+      <h2>Réinitialisation des données métier</h2>
+      <p class='msg'><b>Action sensible :</b> cette opération remet à zéro les analyses, résultats, demandes, non-conformités, CAPA, tickets et journaux. Les comptes utilisateurs sont conservés.</p>
+      <form method='post' class='grid g2'>
+        <label>Mot de passe administrateur<input name='password' type='password' required></label>
+        <label>Confirmation<input name='confirm' placeholder='REINITIALISER' required></label>
+        <div><button class='btn bad'>Réinitialiser définitivement</button></div>
+      </form>
+    </div>
+    """
+    return page("Réinitialisation", content, u)
+
+@app.route("/lab/delete-result", methods=["POST"])
+@role_required("laboratoire")
+def lab_delete_result(u):
+    rid = formv("id")
+    r = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
+    if not r:
+        return redirect("/lab/processed")
+
+    execute("DELETE FROM lab_results WHERE request_id=?", (rid,))
+    execute("UPDATE requests SET status='En cours laboratoire', updated_at=? WHERE id=?", (now(), rid))
+    audit("Suppression résultat livré par laboratoire")
+    return redirect("/lab/processed")
+
+@app.route("/account/delete-request", methods=["GET", "POST"])
+def account_delete_request():
+    u = current_user()
+    if not u:
+        return redirect("/login")
+
+    if u["role"] == "admin":
+        return page("Suppression compte", "<div class='card'><h2>Compte administrateur protégé</h2><p>Le compte administrateur principal ne peut pas demander sa suppression depuis l'application.</p></div>", u, 403)
+
+    if request.method == "POST":
+        reason = formv("reason")
+        execute("UPDATE users SET delete_requested=1, delete_reason=?, delete_requested_at=? WHERE id=?", (reason, now(), u["id"]))
+        audit("Demande suppression compte utilisateur")
+        return page("Demande envoyée", "<div class='card'><h2>Demande envoyée</h2><p>Votre demande de suppression de compte a été transmise à l'administrateur.</p></div>", u)
+
+    content = """
+    <div class='card'>
+      <h2>Demande de suppression de compte</h2>
+      <p class='msg'>Votre compte ne sera pas supprimé immédiatement. La demande sera examinée et validée uniquement par l'administrateur.</p>
+      <form method='post' class='grid'>
+        <label>Motif de la demande<textarea name='reason' required></textarea></label>
+        <button class='btn bad'>Envoyer la demande</button>
+      </form>
+    </div>
+    """
+    return page("Demande de suppression de compte", content, u)
+
+@app.route("/admin/delete-requests")
+@role_required("admin")
+def admin_delete_requests(u):
+    users = execute("SELECT * FROM users WHERE delete_requested=1 ORDER BY delete_requested_at DESC", fetch=True)
+    trs = ""
+    for x in users:
+        actions = ""
+        if x["email"] != ADMIN_EMAIL:
+            actions = f"""
+            <form method='post' action='/admin/delete-request-action' style='display:inline'>
+              <input type='hidden' name='id' value='{x['id']}'>
+              <button class='btn bad' name='action' value='approve'>Valider suppression</button>
+              <button class='btn sec' name='action' value='reject'>Refuser</button>
+            </form>
+            """
+        trs += f"<tr><td>{x.get('delete_requested_at','')}</td><td>{x.get('name','')}</td><td>{x.get('email','')}</td><td>{x.get('role','')}</td><td>{x.get('delete_reason','')}</td><td>{actions}</td></tr>"
+    return page("Demandes de suppression", f"<div class='card'><h2>Demandes de suppression de compte</h2><table class='table'><tr><th>Date</th><th>Nom</th><th>Email</th><th>Rôle</th><th>Motif</th><th>Action</th></tr>{trs or '<tr><td colspan=6>Aucune demande.</td></tr>'}</table></div>", u)
+
+@app.route("/admin/delete-request-action", methods=["POST"])
+@role_required("admin")
+def admin_delete_request_action(u):
+    uid = formv("id")
+    act = formv("action")
+    target = execute("SELECT * FROM users WHERE id=?", (uid,), fetchone=True)
+
+    if not target or target.get("email") == ADMIN_EMAIL:
+        return redirect("/admin/delete-requests")
+
+    if act == "approve":
+        execute("DELETE FROM users WHERE id=?", (uid,))
+        audit("Validation suppression compte utilisateur")
+    elif act == "reject":
+        execute("UPDATE users SET delete_requested=0, delete_reason=NULL, delete_requested_at=NULL WHERE id=?", (uid,))
+        audit("Refus suppression compte utilisateur")
+
+    return redirect("/admin/delete-requests")
 
 
 @app.route("/admin/export")
