@@ -133,6 +133,14 @@ def init_db():
             id SERIAL PRIMARY KEY, title TEXT NOT NULL, description TEXT, category TEXT, status TEXT DEFAULT 'Ouvert',
             created_by INTEGER, created_by_name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         )""",
+        """CREATE TABLE IF NOT EXISTS event_history(
+            id SERIAL PRIMARY KEY, request_id INTEGER, user_id INTEGER, user_name TEXT, event TEXT, comment TEXT,
+            created_at TEXT NOT NULL, ip_address TEXT
+        )""",
+        """CREATE TABLE IF NOT EXISTS notifications(
+            id SERIAL PRIMARY KEY, role_target TEXT, user_id INTEGER, title TEXT, message TEXT, seen INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL
+        )""",
     ]
     con = db()
     try:
@@ -144,9 +152,6 @@ def init_db():
         con.close()
     ensure_column("users", "approved", "INTEGER DEFAULT 0")
     ensure_column("audit", "ip_address", "TEXT")
-    ensure_column("users", "delete_requested", "INTEGER DEFAULT 0")
-    ensure_column("users", "delete_reason", "TEXT")
-    ensure_column("users", "delete_requested_at", "TEXT")
     ensure_admin()
 
 def ensure_column(table, col, ddl):
@@ -170,6 +175,22 @@ def audit(action):
     u = current_user()
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "") if request else ""
     execute("INSERT INTO audit(user_id,user_name,action,created_at,ip_address) VALUES(?,?,?,?,?)", (u.get('id') if u else None, u.get('name') if u else '', action, now(), ip))
+
+def history_event(request_id, event, comment=""):
+    u = current_user()
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "") if request else ""
+    try:
+        execute("INSERT INTO event_history(request_id,user_id,user_name,event,comment,created_at,ip_address) VALUES(?,?,?,?,?,?,?)",
+                (request_id, u.get("id") if u else None, u.get("name") if u else "", event, comment, now(), ip))
+    except Exception:
+        pass
+
+def notify(role_target, title, message, user_id=None):
+    try:
+        execute("INSERT INTO notifications(role_target,user_id,title,message,seen,created_at) VALUES(?,?,?,?,?,?)",
+                (role_target, user_id, title, message, 0, now()))
+    except Exception:
+        pass
 
 def current_user():
     uid = session.get("uid")
@@ -202,14 +223,14 @@ def page(title, content, user=None, status=200):
     if user:
         items = []
         if user["role"] == "admin":
-            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/admin/delete-requests", "Suppressions comptes"), ("/admin/reset-data", "Réinitialisation"), ("/support", "Support"), ("/audit", "Journal")]
+            items = [("/admin/users", "Utilisateurs"), ("/admin/export", "Exports"), ("/search", "Recherche"), ("/notifications", "Notifications"), ("/admin/backup", "Sauvegarde"), ("/support", "Support"), ("/audit", "Journal")]
         elif user["role"] == "prescripteur":
-            items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives"), ("/support", "Support")]
+            items = [("/request/new", "Nouvelle demande"), ("/requests", "Mes demandes"), ("/archive", "Archives"), ("/search", "Recherche"), ("/notifications", "Notifications"), ("/support", "Support")]
         elif user["role"] == "laboratoire":
-            items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/support", "Support")]
+            items = [("/lab/inbox", "Demandes reçues"), ("/lab/processed", "Analyses traitées"), ("/statistics", "Statistique"), ("/search", "Recherche"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/notifications", "Notifications"), ("/support", "Support")]
         elif user["role"] == "chef_labo":
-            items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/support", "Support")]
-        menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/account/delete-request'>Demander suppression compte</a><a class='nav danger' href='/logout'>Déconnexion</a>"
+            items = [("/chief/pending", "À valider"), ("/chief/all", "Tous les bilans"), ("/statistics", "Statistique"), ("/search", "Recherche"), ("/quality/dashboard", "Tableau qualité"), ("/quality/nonconformities", "Non-conformités"), ("/quality/capa", "CAPA"), ("/microbiology/resistance", "Antibiorésistance"), ("/notifications", "Notifications"), ("/support", "Support")]
+        menu = "".join(f"<a class='nav' href='{u}'>{t}</a>" for u, t in items) + "<a class='nav' href='/account/password'>Changer mot de passe</a><a class='nav danger' href='/logout'>Déconnexion</a>"
     html = f"""<!doctype html><html lang='fr'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title} - {APP_NAME}</title>
 <style>
 :root{{--blue:#075985;--bg:#f4f8fb;--line:#dbe7f0;--ink:#0f172a}}*{{box-sizing:border-box}}body{{margin:0;font-family:Segoe UI,Arial,sans-serif;background:linear-gradient(135deg,#eff6ff,#f8fafc);color:var(--ink)}}.shell{{display:grid;grid-template-columns:280px 1fr;min-height:100vh}}.side{{background:#062b49;color:#fff;padding:22px}}.logo{{width:48px;height:48px;border-radius:15px;background:linear-gradient(135deg,#38bdf8,#14b8a6);display:grid;place-items:center;font-weight:900}}.brand{{display:flex;gap:12px;align-items:center;margin-bottom:22px}}.brand h1{{font-size:20px;margin:0}}.brand p{{font-size:12px;color:#bfdbfe;margin:3px 0 0}}.nav{{display:block;text-decoration:none;padding:12px 14px;border-radius:14px;margin:6px 0;color:#dbeafe;font-weight:700}}.nav:hover{{background:#0b4c78}}.danger{{color:#fecaca}}.top{{background:#fff;border-bottom:1px solid var(--line);padding:16px 24px;display:flex;justify-content:space-between}}.content{{padding:24px;max-width:1480px}}.card{{background:#fff;border:1px solid #e2e8f0;border-radius:22px;box-shadow:0 14px 40px rgba(2,132,199,.08);padding:20px;margin-bottom:18px}}.grid{{display:grid;gap:13px}}.g2{{grid-template-columns:repeat(2,1fr)}}.g3{{grid-template-columns:repeat(3,1fr)}}.g4{{grid-template-columns:repeat(4,1fr)}}label{{font-size:13px;color:#475569;font-weight:700}}input,select,textarea{{width:100%;padding:11px 12px;border:1px solid #cbd5e1;border-radius:12px;background:#fbfdff;margin-top:5px;font-size:14px}}textarea{{min-height:82px}}.btn{{border:0;border-radius:12px;background:var(--blue);color:white;padding:11px 15px;font-weight:800;cursor:pointer;text-decoration:none;display:inline-block}}.btn.sec{{background:#e2e8f0;color:#0f172a}}.btn.ok{{background:#15803d}}.btn.bad{{background:#b91c1c}}.msg{{padding:12px 14px;border-left:5px solid #0284c7;background:#eff6ff;border-radius:14px;color:#1e3a8a}}.table{{width:100%;border-collapse:collapse}}.table th,.table td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}.table th{{background:#f8fafc;color:#475569;font-size:12px}}.pill{{display:inline-block;border-radius:99px;padding:5px 10px;font-size:12px;font-weight:900}}.pill.ok{{background:#dcfce7;color:#166534}}.pill.bad{{background:#fee2e2;color:#991b1b}}.pill.wait{{background:#fef3c7;color:#92400e}}.login{{max-width:560px;margin:8vh auto}}.small{{color:#64748b;font-size:12px}}.reportPage{{width:210mm;min-height:297mm;margin:0 auto;background:#fff;color:#000;padding:10mm;border:1px solid #111;font-family:Arial,sans-serif;font-size:11.2pt;line-height:1.25}}.reportPage h1{{font-size:16pt;text-align:center;margin:2mm 0;text-transform:uppercase}}.center{{text-align:center}}.row{{display:grid;grid-template-columns:1fr 1fr;gap:2mm 12mm;margin:2mm 0}}.box{{border:1px solid #111;padding:2.5mm;margin-top:3mm;min-height:16mm}}.boxTitle{{font-weight:900;text-align:center;border-bottom:1px solid #111;margin:-2.5mm -2.5mm 2mm -2.5mm;padding:1.5mm;text-transform:uppercase}}.abg{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:2mm}}.abg>div{{border:1px solid #333;min-height:26mm;padding:2mm}}.sign{{margin-top:8mm;text-align:right}}@media(max-width:900px){{.shell{{grid-template-columns:1fr}}.side{{height:auto}}.g2,.g3,.g4{{grid-template-columns:1fr}}.content{{padding:12px}}.reportPage{{width:100%;min-height:auto;padding:6mm;font-size:10pt}}}}@media print{{body{{background:#fff}}.side,.top,.noPrint,.card:not(.printCard){{display:none!important}}.shell{{display:block}}.content{{padding:0}}.reportPage{{border:0;margin:0;width:210mm;height:297mm;overflow:hidden}}}}
@@ -324,19 +345,24 @@ def new_request(u):
         vals = [formv(k) for k in fields]
         execute("""INSERT INTO requests(auto_number, sample_number, code_prelevement, date_prelevement, heure_prelevement, service_prescripteur, patient_status, age, age_unit, sex, patient_antibiotics, patient_probe, sample_type, patient_informe_decl, technique_maitrisee_decl, toilette_decl, flacon_sterile_decl, delai_miction_depot, temperature_conservation, prescriber_name, patient_name, patient_firstname, patient_phone, clinical_context, exam_requested, urgent, observations_prescripteur, created_by, created_by_name, status, conformity, rejection_reason, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (auto, "", *vals, u["id"], u["name"], "Envoyé au laboratoire", "Non évalué", "", now(), now()))
+        created = execute("SELECT id FROM requests WHERE auto_number=?", (auto,), fetchone=True)
+        if created:
+            history_event(created["id"], "Création de la demande", "Demande envoyée au laboratoire")
+            notify("laboratoire", "Nouvelle demande ECBU", f"Une nouvelle demande {auto} a été envoyée au laboratoire.")
         return redirect("/requests")
     return page("Nouvelle demande", f"""<div class='card'><h2>Fiche de demande ECBU</h2><form method='post' class='grid g3'><label>Code prélèvement<input name='code_prelevement'></label><label>Date prélèvement<input type='date' name='date_prelevement' required></label><label>Heure prélèvement<input type='time' name='heure_prelevement' required></label><label>Nom patient<input name='patient_name' required></label><label>Prénoms patient<input name='patient_firstname' required></label><label>Contact<input name='patient_phone'></label><label>Âge<input name='age' required></label><label>Unité<select name='age_unit'><option>Ans</option><option>Mois</option><option>Jours</option></select></label><label>Sexe<select name='sex'><option>Masculin</option><option>Féminin</option></select></label><label>Service<input name='service_prescripteur' value='{u.get('service','')}' required></label><label>Médecin<input name='prescriber_name' value='{u['name']}' required></label><label>Statut patient<select name='patient_status'><option>Hospitalisé</option><option>Externe</option><option>Ambulatoire</option></select></label><label>Examen<select name='exam_requested'><option>ECBU</option><option>Culture urine + antibiogramme si positif</option></select></label><label>Urgent<select name='urgent'><option>Non</option><option>Oui</option></select></label><label>Antibiotiques<select name='patient_antibiotics'><option>Non</option><option>Oui</option><option>Non renseigné</option></select></label><label>Sonde urinaire<select name='patient_probe'><option>Non</option><option>Oui</option></select></label><label>Type prélèvement<select name='sample_type'><option>Jet moyen</option><option>Sonde urinaire</option><option>Poche collectrice</option><option>Autre</option></select></label><label>Délai<select name='delai_miction_depot'><option>≤ 2 h</option><option>2–4 h</option><option>> 4 h</option><option>Non renseigné</option></select></label><label>Conservation<select name='temperature_conservation'><option>Réfrigération</option><option>Ambiante</option><option>Non renseignée</option></select></label><label>Patient informé<select name='patient_informe_decl'><option>Oui</option><option>Non</option></select></label><label>Technique maîtrisée<select name='technique_maitrisee_decl'><option>Oui</option><option>Non</option></select></label><label>Toilette intime<select name='toilette_decl'><option>Oui</option><option>Non</option></select></label><label>Flacon stérile<select name='flacon_sterile_decl'><option>Oui</option><option>Non</option></select></label><label style='grid-column:1/-1'>Contexte clinique<textarea name='clinical_context'></textarea></label><label style='grid-column:1/-1'>Observations<textarea name='observations_prescripteur'></textarea></label><button class='btn ok'>Envoyer</button></form></div>""", u)
 
 def request_table(u, rows_, title, lab=False, chief=False):
     trs = ""
     for r in rows_:
-        actions = f"<a class='btn sec' href='/report?id={r['id']}'>Bon</a> "
+        actions = f"<a class='btn sec' href='/report?id={r['id']}'>Bon</a> <a class='btn sec' href='/history?id={r['id']}'>Historique</a> "
         if lab:
-            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a> "
-            if r.get('status') == "Validé et envoyé":
-                actions += f"<form method='post' action='/lab/delete-result' style='display:inline' onsubmit=\"return confirm('Confirmer la suppression du résultat livré ? Le prescripteur ne pourra plus le consulter.');\"><input type='hidden' name='id' value='{r['id']}'><button class='btn bad'>Supprimer résultat</button></form> "
+            actions += f"<a class='btn' href='/lab/edit?id={r['id']}'>Traiter</a>"
         if chief and r['status'] == "En attente validation chef":
-            actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider</button></form>"
+            actions += f"<form method='post' action='/chief/validate' style='display:inline'><input type='hidden' name='id' value='{r['id']}'><button class='btn ok'>Valider</button></form> "
+            actions += f"<a class='btn sec' href='/lab/edit?id={r['id']}'>Corriger</a> "
+        if chief and r['status'] == "Validé et envoyé":
+            actions += f"<form method='post' action='/chief/reopen' style='display:inline' onsubmit=\"return confirm('Rouvrir ce résultat pour correction ?');\"><input type='hidden' name='id' value='{r['id']}'><button class='btn sec'>Rouvrir</button></form>"
         trs += f"<tr><td>{r['auto_number']}</td><td>{r.get('sample_number') or 'À attribuer'}</td><td>{r['service_prescripteur']}</td><td>{r['patient_name']} {r['patient_firstname']}</td><td>{pill(r['status'])}</td><td>{pill(r['conformity'])}</td><td>{actions}</td></tr>"
     return page(title, f"<div class='card'><h2>{title}</h2><table class='table'><tr><th>N° demande</th><th>N° échantillon</th><th>Service</th><th>Patient</th><th>Statut</th><th>Conformité</th><th>Action</th></tr>{trs or '<tr><td colspan=7>Aucune donnée.</td></tr>'}</table></div>", u)
 
@@ -360,12 +386,14 @@ def lab_processed(u):
     return request_table(u, rows_, "Archives laboratoire", lab=(u["role"]=="laboratoire"), chief=(u["role"]=="chef_labo"))
 
 @app.route("/lab/edit", methods=["GET","POST"])
-@role_required("laboratoire")
+@role_required("laboratoire", "chef_labo")
 def lab_edit(u):
     rid = request.values.get("id", "")
     r = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
     if not r:
         return redirect("/lab/inbox")
+    if r.get("status") == "Validé et envoyé":
+        return page("Résultat verrouillé", "<div class='card'><h2>Résultat verrouillé</h2><p>Ce résultat est déjà validé et envoyé. Il doit être rouvert par le chef laboratoire avant modification.</p><a class='btn' href='/lab/processed'>Retour</a></div>", u, 403)
     if request.method == "POST":
         quality = [k for k,_ in RULES if request.form.get(k) == "on"]
         conformity = "Conforme" if len(quality) == len(RULES) else "Non conforme"
@@ -379,6 +407,8 @@ def lab_edit(u):
             execute("""UPDATE lab_results SET reception_date=?, reception_time=?, aspect=?, leucocytes=?, hematies=?, cellules_epitheliales=?, autres_micro=?, gram_result=?, culture_status=?, culture_details=?, antibiogram_json=?, conclusion=?, validator_name=?, validator_title=?, lab_operator_name=?, quality_json=? WHERE request_id=?""", vals[1:] + (rid,))
         else:
             execute("""INSERT INTO lab_results(request_id,reception_date,reception_time,aspect,leucocytes,hematies,cellules_epitheliales,autres_micro,gram_result,culture_status,culture_details,antibiogram_json,conclusion,validator_name,validator_title,lab_operator_name,quality_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", vals)
+        history_event(rid, "Traitement laboratoire", "Résultat saisi ou modifié par le laboratoire")
+        notify("chef_labo", "Résultat en attente", f"Un résultat ECBU est en attente de validation chef.")
         return redirect("/lab/processed")
     checks = "".join(f"<label><input type='checkbox' name='{k}'> {v}</label>" for k,v in RULES)
     atb_rows = "".join(f"<tr><td>{a}</td><td><input name='diam_{i}'></td><td><select name='interp_{i}'><option>ND</option><option>S</option><option>I</option><option>R</option></select></td><td><select name='show_{i}'><option>Non</option><option>Oui</option></select></td></tr>" for i,a in enumerate(ANTIBIOTICS))
@@ -388,6 +418,8 @@ def lab_edit(u):
 @role_required("laboratoire")
 def lab_reject(u):
     execute("UPDATE requests SET status='Rejeté', conformity='Non conforme', rejection_reason=?, updated_at=? WHERE id=?", (formv("reason"), now(), formv("id")))
+    history_event(formv("id"), "Rejet du prélèvement", formv("reason"))
+    notify("prescripteur", "Prélèvement rejeté", "Un prélèvement a été rejeté par le laboratoire.")
     return redirect("/lab/inbox")
 
 @app.route("/chief/pending")
@@ -408,6 +440,10 @@ def chief_validate(u):
     rid = formv("id")
     execute("UPDATE requests SET status='Validé et envoyé', updated_at=? WHERE id=?", (now(), rid))
     execute("UPDATE lab_results SET chief_validator_name=?, chief_validation_at=?, result_sent_at=? WHERE request_id=?", (u["name"], now(), now(), rid))
+    history_event(rid, "Validation finale", "Résultat validé et envoyé au prescripteur")
+    req = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
+    if req:
+        notify("prescripteur", "Résultat disponible", f"Le résultat de la demande {req.get('auto_number','')} est disponible.", req.get("created_by"))
     return redirect("/chief/pending")
 
 @app.route("/report")
@@ -592,128 +628,98 @@ def report():
 
 
 
-# === AJOUT CIBLE : ADMIN RESET / SUPPRESSION RESULTAT / SUPPRESSION COMPTE ===
+# === AJOUT PROFESSIONNEL : STATISTIQUE / HISTORIQUE / RECHERCHE / SAUVEGARDE / NOTIFICATIONS ===
 
-@app.route("/admin/reset-data", methods=["GET", "POST"])
-@role_required("admin")
-def admin_reset_data(u):
-    if request.method == "POST":
-        password = formv("password")
-        confirm = formv("confirm")
-        admin = execute("SELECT * FROM users WHERE email=?", (ADMIN_EMAIL,), fetchone=True)
-
-        if not admin or not verify_password(admin.get("password_hash", ""), password):
-            return page("Réinitialisation", "<div class='card'><h2>Mot de passe administrateur incorrect</h2><a class='btn' href='/admin/reset-data'>Retour</a></div>", u, 403)
-
-        if confirm != "REINITIALISER":
-            return page("Réinitialisation", "<div class='card'><h2>Confirmation invalide</h2><p>Vous devez saisir exactement : <b>REINITIALISER</b></p><a class='btn' href='/admin/reset-data'>Retour</a></div>", u, 400)
-
-        tables = ["lab_results", "requests", "non_conformities", "capa_actions", "support_tickets", "audit"]
-        for table in tables:
-            try:
-                execute(f"DELETE FROM {table}")
-            except Exception:
-                pass
-
-        seqs = ["requests_id_seq", "non_conformities_id_seq", "capa_actions_id_seq", "support_tickets_id_seq", "audit_id_seq"]
-        for seq in seqs:
-            try:
-                execute(f"ALTER SEQUENCE {seq} RESTART WITH 1")
-            except Exception:
-                pass
-
-        audit("Réinitialisation complète des données métier par administrateur")
-        return page("Réinitialisation terminée", "<div class='card'><h2>Données métier réinitialisées</h2><p>Les analyses, résultats, demandes, non-conformités, CAPA, tickets et journaux ont été remis à zéro. Les comptes utilisateurs sont conservés.</p><a class='btn' href='/admin/users'>Retour administration</a></div>", u)
-
-    content = """
-    <div class='card'>
-      <h2>Réinitialisation des données métier</h2>
-      <p class='msg'><b>Action sensible :</b> cette opération remet à zéro les analyses, résultats, demandes, non-conformités, CAPA, tickets et journaux. Les comptes utilisateurs sont conservés.</p>
-      <form method='post' class='grid g2'>
-        <label>Mot de passe administrateur<input name='password' type='password' required></label>
-        <label>Confirmation<input name='confirm' placeholder='REINITIALISER' required></label>
-        <div><button class='btn bad'>Réinitialiser définitivement</button></div>
-      </form>
-    </div>
-    """
-    return page("Réinitialisation", content, u)
-
-@app.route("/lab/delete-result", methods=["POST"])
-@role_required("laboratoire")
-def lab_delete_result(u):
+@app.route("/chief/reopen", methods=["POST"])
+@role_required("chef_labo")
+def chief_reopen(u):
     rid = formv("id")
-    r = execute("SELECT * FROM requests WHERE id=?", (rid,), fetchone=True)
-    if not r:
-        return redirect("/lab/processed")
+    execute("UPDATE requests SET status='En attente validation chef', updated_at=? WHERE id=?", (now(), rid))
+    execute("UPDATE lab_results SET result_sent_at=NULL WHERE request_id=?", (rid,))
+    history_event(rid, "Réouverture résultat", "Résultat rouvert par le chef laboratoire pour correction")
+    audit("Réouverture résultat validé")
+    return redirect("/chief/all")
 
-    execute("DELETE FROM lab_results WHERE request_id=?", (rid,))
-    execute("UPDATE requests SET status='En cours laboratoire', updated_at=? WHERE id=?", (now(), rid))
-    audit("Suppression résultat livré par laboratoire")
-    return redirect("/lab/processed")
+@app.route("/statistics")
+@role_required("laboratoire", "chef_labo")
+def statistics_page(u):
+    total = execute("SELECT COUNT(*) AS n FROM requests WHERE status!='Supprimé'", fetchone=True)["n"]
+    valid = execute("SELECT COUNT(*) AS n FROM requests WHERE status='Validé et envoyé'", fetchone=True)["n"]
+    rejet = execute("SELECT COUNT(*) AS n FROM requests WHERE status='Rejeté'", fetchone=True)["n"]
+    nonconf = execute("SELECT COUNT(*) AS n FROM requests WHERE conformity='Non conforme'", fetchone=True)["n"]
+    services = execute("SELECT service_prescripteur, COUNT(*) AS n FROM requests WHERE status!='Supprimé' GROUP BY service_prescripteur ORDER BY n DESC LIMIT 10", fetch=True)
+    months = execute("SELECT substring(created_at,1,7) AS mois, COUNT(*) AS n FROM requests WHERE status!='Supprimé' GROUP BY substring(created_at,1,7) ORDER BY mois DESC LIMIT 12", fetch=True)
+    nc = execute("SELECT type_nc, COUNT(*) AS n FROM non_conformities GROUP BY type_nc ORDER BY n DESC LIMIT 10", fetch=True)
+    def trs(data, a, b):
+        return "".join(f"<tr><td>{html.escape(str(x.get(a) or 'Non renseigné'))}</td><td>{x.get(b)}</td></tr>" for x in data) or "<tr><td colspan='2'>Aucune donnée.</td></tr>"
+    content = f"""
+    <div class='grid g4'>
+      <div class='card'><h3>Total ECBU</h3><h1>{total}</h1></div>
+      <div class='card'><h3>Validés</h3><h1>{valid}</h1></div>
+      <div class='card'><h3>Rejets</h3><h1>{rejet}</h1></div>
+      <div class='card'><h3>Non-conformités</h3><h1>{nonconf}</h1></div>
+    </div>
+    <div class='grid g3'>
+      <div class='card'><h2>Répartition par service</h2><table class='table'><tr><th>Service</th><th>Nombre</th></tr>{trs(services,'service_prescripteur','n')}</table></div>
+      <div class='card'><h2>Évolution mensuelle</h2><table class='table'><tr><th>Mois</th><th>Nombre</th></tr>{trs(months,'mois','n')}</table></div>
+      <div class='card'><h2>Top non-conformités</h2><table class='table'><tr><th>Type</th><th>Nombre</th></tr>{trs(nc,'type_nc','n')}</table></div>
+    </div>
+    <div class='card'><h2>Exports</h2><a class='btn' href='/export/requests.csv'>Exporter demandes CSV</a> <a class='btn sec' href='/quality/export/nonconformities.csv'>Exporter non-conformités CSV</a></div>
+    """
+    return page("Statistique", content, u)
 
-@app.route("/account/delete-request", methods=["GET", "POST"])
-def account_delete_request():
+@app.route("/search", methods=["GET", "POST"])
+def global_search():
     u = current_user()
     if not u:
         return redirect("/login")
+    qv = request.values.get("q", "").strip()
+    data = []
+    if qv:
+        like = "%" + qv + "%"
+        if u["role"] == "prescripteur":
+            data = execute("""SELECT * FROM requests WHERE created_by=? AND status!='Supprimé' AND
+                              (patient_name ILIKE ? OR patient_firstname ILIKE ? OR sample_number ILIKE ? OR auto_number ILIKE ? OR service_prescripteur ILIKE ?)
+                              ORDER BY id DESC LIMIT 100""", (u["id"], like, like, like, like, like), fetch=True)
+        else:
+            data = execute("""SELECT * FROM requests WHERE status!='Supprimé' AND
+                              (patient_name ILIKE ? OR patient_firstname ILIKE ? OR sample_number ILIKE ? OR auto_number ILIKE ? OR service_prescripteur ILIKE ?)
+                              ORDER BY id DESC LIMIT 100""", (like, like, like, like, like), fetch=True)
+    trs = "".join(f"<tr><td>{r.get('auto_number','')}</td><td>{r.get('sample_number','')}</td><td>{r.get('patient_name','')} {r.get('patient_firstname','')}</td><td>{r.get('service_prescripteur','')}</td><td>{pill(r.get('status',''))}</td><td><a class='btn sec' href='/report?id={r['id']}'>Bon</a></td></tr>" for r in data) or "<tr><td colspan='6'>Aucun résultat.</td></tr>"
+    return page("Recherche", f"""<div class='card'><h2>Recherche globale</h2><form method='get' class='grid g2'><label>Nom, N° échantillon, service, demande<input name='q' value='{html.escape(qv)}'></label><div><br><button class='btn'>Rechercher</button></div></form></div><div class='card'><table class='table'><tr><th>N° demande</th><th>N° échantillon</th><th>Patient</th><th>Service</th><th>Statut</th><th>Action</th></tr>{trs}</table></div>""", u)
 
-    if u["role"] == "admin":
-        return page("Suppression compte", "<div class='card'><h2>Compte administrateur protégé</h2><p>Le compte administrateur principal ne peut pas demander sa suppression depuis l'application.</p></div>", u, 403)
+@app.route("/notifications")
+def notifications_page():
+    u = current_user()
+    if not u:
+        return redirect("/login")
+    data = execute("SELECT * FROM notifications WHERE (role_target=? OR user_id=?) ORDER BY id DESC LIMIT 100", (u["role"], u["id"]), fetch=True)
+    execute("UPDATE notifications SET seen=1 WHERE role_target=? OR user_id=?", (u["role"], u["id"]))
+    trs = "".join(f"<tr><td>{n.get('created_at','')}</td><td>{n.get('title','')}</td><td>{n.get('message','')}</td><td>{'Lu' if n.get('seen') else 'Nouveau'}</td></tr>" for n in data) or "<tr><td colspan='4'>Aucune notification.</td></tr>"
+    return page("Notifications", f"<div class='card'><h2>Notifications</h2><table class='table'><tr><th>Date</th><th>Titre</th><th>Message</th><th>Statut</th></tr>{trs}</table></div>", u)
 
-    if request.method == "POST":
-        reason = formv("reason")
-        execute("UPDATE users SET delete_requested=1, delete_reason=?, delete_requested_at=? WHERE id=?", (reason, now(), u["id"]))
-        audit("Demande suppression compte utilisateur")
-        return page("Demande envoyée", "<div class='card'><h2>Demande envoyée</h2><p>Votre demande de suppression de compte a été transmise à l'administrateur.</p></div>", u)
+@app.route("/history")
+@role_required("laboratoire", "chef_labo")
+def history_page(u):
+    rid = request.args.get("id", "")
+    if not rid:
+        return page("Historique", "<div class='card'><h2>Historique</h2><p>Veuillez ouvrir l'historique depuis une demande.</p></div>", u)
+    data = execute("SELECT * FROM event_history WHERE request_id=? ORDER BY id DESC", (rid,), fetch=True)
+    trs = "".join(f"<tr><td>{h.get('created_at','')}</td><td>{h.get('user_name','')}</td><td>{h.get('event','')}</td><td>{h.get('comment','')}</td><td>{h.get('ip_address','')}</td></tr>" for h in data) or "<tr><td colspan='5'>Aucun historique.</td></tr>"
+    return page("Historique", f"<div class='card'><h2>Historique de l'échantillon</h2><table class='table'><tr><th>Date</th><th>Utilisateur</th><th>Événement</th><th>Commentaire</th><th>IP</th></tr>{trs}</table></div>", u)
 
-    content = """
-    <div class='card'>
-      <h2>Demande de suppression de compte</h2>
-      <p class='msg'>Votre compte ne sera pas supprimé immédiatement. La demande sera examinée et validée uniquement par l'administrateur.</p>
-      <form method='post' class='grid'>
-        <label>Motif de la demande<textarea name='reason' required></textarea></label>
-        <button class='btn bad'>Envoyer la demande</button>
-      </form>
-    </div>
-    """
-    return page("Demande de suppression de compte", content, u)
-
-@app.route("/admin/delete-requests")
+@app.route("/admin/backup")
 @role_required("admin")
-def admin_delete_requests(u):
-    users = execute("SELECT * FROM users WHERE delete_requested=1 ORDER BY delete_requested_at DESC", fetch=True)
-    trs = ""
-    for x in users:
-        actions = ""
-        if x["email"] != ADMIN_EMAIL:
-            actions = f"""
-            <form method='post' action='/admin/delete-request-action' style='display:inline'>
-              <input type='hidden' name='id' value='{x['id']}'>
-              <button class='btn bad' name='action' value='approve'>Valider suppression</button>
-              <button class='btn sec' name='action' value='reject'>Refuser</button>
-            </form>
-            """
-        trs += f"<tr><td>{x.get('delete_requested_at','')}</td><td>{x.get('name','')}</td><td>{x.get('email','')}</td><td>{x.get('role','')}</td><td>{x.get('delete_reason','')}</td><td>{actions}</td></tr>"
-    return page("Demandes de suppression", f"<div class='card'><h2>Demandes de suppression de compte</h2><table class='table'><tr><th>Date</th><th>Nom</th><th>Email</th><th>Rôle</th><th>Motif</th><th>Action</th></tr>{trs or '<tr><td colspan=6>Aucune demande.</td></tr>'}</table></div>", u)
-
-@app.route("/admin/delete-request-action", methods=["POST"])
-@role_required("admin")
-def admin_delete_request_action(u):
-    uid = formv("id")
-    act = formv("action")
-    target = execute("SELECT * FROM users WHERE id=?", (uid,), fetchone=True)
-
-    if not target or target.get("email") == ADMIN_EMAIL:
-        return redirect("/admin/delete-requests")
-
-    if act == "approve":
-        execute("DELETE FROM users WHERE id=?", (uid,))
-        audit("Validation suppression compte utilisateur")
-    elif act == "reject":
-        execute("UPDATE users SET delete_requested=0, delete_reason=NULL, delete_requested_at=NULL WHERE id=?", (uid,))
-        audit("Refus suppression compte utilisateur")
-
-    return redirect("/admin/delete-requests")
+def admin_backup(u):
+    tables = ["users","requests","lab_results","non_conformities","capa_actions","support_tickets","audit","event_history"]
+    payload = {}
+    for t in tables:
+        try:
+            payload[t] = execute(f"SELECT * FROM {t}", fetch=True)
+        except Exception:
+            payload[t] = []
+    data = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    return Response(data.encode("utf-8"), mimetype="application/json", headers={"Content-Disposition":"attachment; filename=sauvegarde_ecbu_liaison_pro.json"})
 
 
 @app.route("/admin/export")
